@@ -532,18 +532,26 @@ async function handleRequest(request) {
         // 获取用户指定的UA（如果有）
         const userUA = url.searchParams.get('ua') || request.headers.get('User-Agent') || 'Mozilla/5.0';
         
+        // 获取Range头以支持断点续传
+        const rangeHeader = request.headers.get('Range');
+        
         // 验证URL格式
         if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
             throw new Error('Invalid URL format');
         }
         
-        // 创建一个新的请求，设置用户指定的UA
+        // 创建一个新的请求，设置用户指定的UA和Range头
+        const newRequestHeaders = new Headers({
+            'User-Agent': userUA,
+            'Accept': request.headers.get('Accept') || '*/*',
+        });
+        if (rangeHeader) {
+            newRequestHeaders.set('Range', rangeHeader);
+        }
+        
         const newRequest = new Request(targetUrl, {
             method: 'GET',
-            headers: {
-                'User-Agent': userUA,
-                'Accept': request.headers.get('Accept') || '*/*',
-            },
+            headers: newRequestHeaders,
             redirect: 'follow'
         });
         
@@ -554,7 +562,7 @@ async function handleRequest(request) {
         const headers = new Headers(response.headers);
         headers.set('Access-Control-Allow-Origin', '*');
         headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-        headers.set('Access-Control-Allow-Headers', 'Content-Type');
+        headers.set('Access-Control-Allow-Headers', 'Content-Type, Range');
         
         // 如果没有Content-Disposition头，添加一个以确保下载行为
         if (!headers.has('Content-Disposition')) {
@@ -563,5 +571,16 @@ async function handleRequest(request) {
             const pathname = urlObj.pathname;
             const parts = pathname.split('/');
             const fileName = parts[parts.length - 1];
-            
-           
+            headers.set('Content-Disposition', `attachment; filename="${fileName}"`);
+        }
+        
+        // 返回代理响应
+        return new Response(response.body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: headers,
+        });
+    } catch (err) {
+        return new Response(`Error: ${err.message}`, { status: 500 });
+    }
+}
