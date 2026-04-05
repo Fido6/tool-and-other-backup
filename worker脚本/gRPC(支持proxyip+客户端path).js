@@ -1,11 +1,18 @@
 import { connect } from 'cloudflare:sockets';
 
+// 1. 【核心配置】只有客户端 UUID 匹配这个值才能连接
 const UUID = "58888888-8888-8888-8888-588888888888";
 
 // 反代IP配置：留空则直连失败后自动使用默认反代
 let 反代IP = 'sg.wogg.us.kg';
 
-// ✅ 解析地址端口（支持 host:port、IPv6、.tp端口 格式）
+// ✅ UUID 转换工具函数（将 16 字节转换为字符串格式）
+const buildUUID = (a, i) => Array.from(a.slice(i, i + 16))
+  .map(n => n.toString(16).padStart(2, '0'))
+  .join('')
+  .replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5');
+
+// ✅ 解析地址端口
 async function 解析地址端口(proxyIP) {
   proxyIP = proxyIP.toLowerCase();
   let 地址 = proxyIP, 端口 = 443;
@@ -26,45 +33,24 @@ async function 解析地址端口(proxyIP) {
   return [地址, 端口];
 }
 
-// ✅ 动态反代参数获取（参照 Ak1.32 的 反代参数获取()）
-// 支持以下格式：
-//   ?proxyip=1.2.3.4
-//   /proxyip.1.2.3.4/...
-//   /proxyip=1.2.3.4/...
-//   /pyip=1.2.3.4/...
-//   /ip=1.2.3.4/...
-//   多个IP逗号分隔时随机选一个
+// ✅ 动态反代参数获取
 async function 反代参数获取(request, 当前反代IP) {
   const url = new URL(request.url);
   const { pathname, searchParams } = url;
   const pathLower = pathname.toLowerCase();
-
-  // query 参数优先级最高：?proxyip=
   if (searchParams.has('proxyip')) {
     const 路参IP = searchParams.get('proxyip');
-    return 路参IP.includes(',')
-      ? 路参IP.split(',')[Math.floor(Math.random() * 路参IP.split(',').length)]
-      : 路参IP;
+    return 路参IP.includes(',') ? 路参IP.split(',')[Math.floor(Math.random() * 路参IP.split(',').length)] : 路参IP;
   }
-
-  // path 参数：/proxyip.xxx、/proxyip=xxx、/pyip=xxx、/ip=xxx
   const proxyMatch = pathLower.match(/\/(proxyip[.=]|pyip=|ip=)([^/]+)/);
   if (proxyMatch) {
     const 路参IP = proxyMatch[1] === 'proxyip.' ? `proxyip.${proxyMatch[2]}` : proxyMatch[2];
-    return 路参IP.includes(',')
-      ? 路参IP.split(',')[Math.floor(Math.random() * 路参IP.split(',').length)]
-      : 路参IP;
+    return 路参IP.includes(',') ? 路参IP.split(',')[Math.floor(Math.random() * 路参IP.split(',').length)] : 路参IP;
   }
-
-  // 无动态参数，返回原配置值（留空则用 colo 默认反代）
   return 当前反代IP ? 当前反代IP : request.cf.colo + '.PrOxYip.CmLiuSsSs.nEt';
 }
 
-const buildUUID = (a, i) => Array.from(a.slice(i, i + 16))
-  .map(n => n.toString(16).padStart(2, '0'))
-  .join('')
-  .replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5');
-
+// ✅ 提取 VLESS 信息（增加了 UUID 提取）
 const extractVlessFromProtobuf = (rawPayload) => {
   let ptr = 0;
   if (rawPayload[ptr] === 0x0A) {
@@ -78,6 +64,10 @@ const extractVlessFromProtobuf = (rawPayload) => {
     }
     const start = ptr;
     const version = rawPayload[start];
+    
+    // --- 关键修改：提取客户端发来的 UUID ---
+    const clientUUID = buildUUID(rawPayload, start + 1);
+    
     const addonLen = rawPayload[start + 17];
     const o1 = start + 18 + addonLen;
     const cmd = rawPayload[o1];
@@ -94,7 +84,7 @@ const extractVlessFromProtobuf = (rawPayload) => {
       host: h, port: p,
       vlessPayload: rawPayload.slice(o2 + l),
       version,
-      vlessHeaderSize: (o2 + l) - start
+      clientUUID // 返回提取到的 UUID
     };
   }
 };
@@ -127,15 +117,10 @@ export default {
     if (request.method !== 'POST' || !contentType.startsWith('application/grpc')) {
       return new Response('Not Found', { status: 404 });
     }
-
-    // ✅ 每次请求动态获取反代IP
     const 当前反代IP = await 反代参数获取(request, 反代IP);
-
     const { readable, writable } = new TransformStream();
     const responseWriter = writable.getWriter();
-
     processStream(request.body.getReader(), responseWriter, 当前反代IP).catch(e => console.error(`[流异常]`, e.message));
-
     return new Response(readable, {
       status: 200,
       headers: { 'Content-Type': 'application/grpc', 'grpc-status': '0' }
@@ -151,9 +136,7 @@ async function processStream(clientReader, responseWriter, proxyIP) {
     while (true) {
       const { done, value } = await clientReader.read();
       if (done) break;
-
       buffer = concatBuffer(buffer, value);
-
       while (buffer.length >= 5) {
         const grpcLen = ((buffer[1] << 24) >>> 0) | (buffer[2] << 16) | (buffer[3] << 8) | buffer[4];
         if (buffer.length >= 5 + grpcLen) {
@@ -162,10 +145,17 @@ async function processStream(clientReader, responseWriter, proxyIP) {
 
           if (isFirst) {
             isFirst = false;
-            const { host, port, vlessPayload, version } = extractVlessFromProtobuf(grpcData);
-            console.log(`[Target] ${host}:${port}`);
+            // --- 提取信息 ---
+            const { host, port, vlessPayload, version, clientUUID } = extractVlessFromProtobuf(grpcData);
 
-            // ✅ 先直连，失败后 fallback 到反代IP
+            // --- 关键修改：在这里进行 UUID 匹配校验 ---
+            if (clientUUID !== UUID) {
+              console.error(`[鉴权失败] 客户端 UUID: ${clientUUID} 不匹配！`);
+              throw new Error('Invalid UUID'); // 抛出错误，终止后续所有操作
+            }
+
+            console.log(`[鉴权通过] Target: ${host}:${port}`);
+
             try {
               socket = connect({ hostname: host, port: port });
               await socket.opened;
@@ -178,10 +168,8 @@ async function processStream(clientReader, responseWriter, proxyIP) {
 
             writer = socket.writable.getWriter();
             reader = socket.readable.getReader();
-
             await responseWriter.write(makeProtobufGrpcFrame(new Uint8Array([version, 0])));
             pipeToClient(reader, responseWriter);
-
             if (vlessPayload.length > 0) await writer.write(vlessPayload);
           } else {
             const pureData = stripProtobufHeader(grpcData);
