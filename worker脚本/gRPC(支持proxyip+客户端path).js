@@ -5,7 +5,7 @@ const UUID = "58888888-8888-8888-8888-588888888888";
 let 反代IP = 'sg.wogg.us.kg';
 
 // 2. 【黑名单配置】
-// 是否开启外部黑名单开关true或者false，设置为true则只使用链接里的规则，设置为false则只是用BLACKLIST硬编码
+// 是否开启外部黑名单开关true或者false，设置为true则只使用链接里的规则，设置为false则只使用BLACKLIST硬编码
 const ENABLE_EXTERNAL_BLACKLIST = true;
 // 外部黑名单url地址，支持正则，格式参考下面的链接，不支持adblock语法
 const EXTERNAL_URL = 'https://raw.githubusercontent.com/Pideo1/bbbfg/refs/heads/main/blacklist.txt'; 
@@ -24,7 +24,7 @@ let cachedExternalBlacklist = null;
 let lastFetchTime = 0;
 const CACHE_TTL = 3600 * 1000; // 缓存 1 小时
 
-//获取并解析外部黑名单
+// ✅ 获取并解析外部黑名单
 async function getExternalBlacklist() {
   const now = Date.now();
   if (cachedExternalBlacklist && (now - lastFetchTime < CACHE_TTL)) {
@@ -36,47 +36,59 @@ async function getExternalBlacklist() {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000); // 5秒超时
     
-    const response = await fetch(EXTERNAL_URL, { signal: controller.signal });
+    const response = await fetch(EXTERNAL_URL, { 
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Cloudflare-Worker-Proxy' }
+    });
     clearTimeout(timeoutId);
     
     if (!response.ok) throw new Error(`HTTP 状态码: ${response.status}`);
     
     const text = await response.text();
-    const lines = text.split('\n')
-      .map(l => l.trim())
-      .filter(l => l && !l.startsWith('#')); // 过滤空行和注释
-    
-    const regexes = lines.map(pattern => {
+    const lines = text.split('\n');
+    const regexes = [];
+
+    for (let line of lines) {
+      // 1. 处理注释：去掉 # 及其后面的内容
+      const commentIndex = line.indexOf('#');
+      if (commentIndex !== -1) {
+        line = line.substring(0, commentIndex);
+      }
+      
+      // 2. 去掉首尾空格
+      const pattern = line.trim();
+      
+      // 3. 过滤空行
+      if (!pattern) continue;
+
       try {
-        return new RegExp(pattern, 'i');
+        regexes.push(new RegExp(pattern, 'i'));
       } catch (e) {
         console.error(`[正则编译失败] 模式: ${pattern}, 原因: ${e.message}`);
-        return null;
       }
-    }).filter(r => r !== null);
+    }
     
     cachedExternalBlacklist = regexes;
     lastFetchTime = now;
-    console.log(`[外部黑名单] 更新成功，包含 ${cachedExternalBlacklist.length} 条正则规则`);
+    console.log(`[外部黑名单] 更新成功，包含 ${cachedExternalBlacklist.length} 条有效规则`);
     return cachedExternalBlacklist;
   } catch (e) {
     console.error(`[外部黑名单获取失败]`, e.message);
-    return cachedExternalBlacklist || []; // 失败时返回旧缓存或空数组
+    // 如果获取失败且没有缓存，返回空数组；如果有缓存则继续使用旧缓存
+    return cachedExternalBlacklist || [];
   }
 }
 
-//检查域名是否在黑名单中
+// ✅ 检查域名是否在黑名单中
 function isBlacklisted(host, externalList) {
   const hostLower = host.toLowerCase();
   
   if (ENABLE_EXTERNAL_BLACKLIST) {
-    // 使用外部正则表达式列表
     if (externalList && externalList.length > 0) {
       return externalList.some(regex => regex.test(hostLower));
     }
     return false;
   } else {
-    // 使用硬编码字符串列表
     return BLACKLIST.some(blocked => {
       const blockedLower = blocked.toLowerCase();
       return hostLower === blockedLower || hostLower.endsWith('.' + blockedLower);
@@ -84,13 +96,13 @@ function isBlacklisted(host, externalList) {
   }
 }
 
-//UUID 转换工具函数
+// ✅ UUID 转换工具函数
 const buildUUID = (a, i) => Array.from(a.slice(i, i + 16))
   .map(n => n.toString(16).padStart(2, '0'))
   .join('')
   .replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5');
 
-//解析地址端口
+// ✅ 解析地址端口
 async function 解析地址端口(proxyIP) {
   proxyIP = proxyIP.toLowerCase();
   let 地址 = proxyIP, 端口 = 443;
@@ -111,7 +123,7 @@ async function 解析地址端口(proxyIP) {
   return [地址, 端口];
 }
 
-//动态反代参数获取
+// ✅ 动态反代参数获取
 async function 反代参数获取(request, 当前反代IP) {
   const url = new URL(request.url);
   const { pathname, searchParams } = url;
@@ -128,7 +140,7 @@ async function 反代参数获取(request, 当前反代IP) {
   return 当前反代IP ? 当前反代IP : request.cf.colo + '.PrOxYip.CmLiuSsSs.nEt';
 }
 
-//提取 VLESS 信息
+// ✅ 提取 VLESS 信息
 const extractVlessFromProtobuf = (rawPayload) => {
   try {
     let ptr = 0;
@@ -197,7 +209,6 @@ export default {
         return new Response('Not Found', { status: 404 });
       }
 
-      // 如果开启了外部黑名单，预先获取列表
       let externalList = null;
       if (ENABLE_EXTERNAL_BLACKLIST) {
         externalList = await getExternalBlacklist();
@@ -231,6 +242,10 @@ async function processStream(clientReader, responseWriter, proxyIP, externalList
       const { done, value } = await clientReader.read();
       if (done) break;
 
+      // 优化：合并数据包，限制总大小
+      if (buffer.length + value.length > MAX_GRPC_FRAME_SIZE * 2) {
+        throw new Error('Buffer overflow');
+      }
       const newBuffer = new Uint8Array(buffer.length + value.length);
       newBuffer.set(buffer);
       newBuffer.set(value, buffer.length);
@@ -240,7 +255,7 @@ async function processStream(clientReader, responseWriter, proxyIP, externalList
         const grpcLen = ((buffer[1] << 24) >>> 0) | (buffer[2] << 16) | (buffer[3] << 8) | buffer[4];
         
         if (grpcLen > MAX_GRPC_FRAME_SIZE) {
-          throw new Error(`gRPC 帧大小 ${grpcLen} 超过限制`);
+          throw new Error(`gRPC 帧过大: ${grpcLen}`);
         }
 
         if (buffer.length >= 5 + grpcLen) {
@@ -253,16 +268,14 @@ async function processStream(clientReader, responseWriter, proxyIP, externalList
             
             const { host, port, vlessPayload, version, clientUUID } = vlessInfo;
 
-            // --- 1. UUID 校验 ---
             if (clientUUID !== UUID) {
               console.error(`[鉴权失败] UUID 不匹配: ${clientUUID}`);
               throw new Error('Invalid UUID');
             }
 
-            // --- 2. 黑名单校验 (支持外部正则) ---
             if (isBlacklisted(host, externalList)) {
-              console.warn(`[拦截] 命中黑名单规则: ${host}`);
-              throw new Error(`Access denied to blacklisted host: ${host}`);
+              console.warn(`[拦截] 命中黑名单: ${host}`);
+              throw new Error(`Access denied: ${host}`);
             }
 
             console.log(`[连接] 目标: ${host}:${port}`);
@@ -289,7 +302,8 @@ async function processStream(clientReader, responseWriter, proxyIP, externalList
             if (writer) await writer.write(pureData);
           }
           
-          buffer = buffer.slice(5 + grpcLen);
+          // 消耗已处理的数据，使用 subarray 避免内存拷贝
+          buffer = buffer.subarray(5 + grpcLen);
         } else {
           break;
         }
@@ -306,7 +320,7 @@ function stripProtobufHeader(data) {
   if (data.length === 0 || data[0] !== 0x0A) return data;
   let p = 1;
   while (p < data.length && (data[p++] & 0x80));
-  return data.slice(p);
+  return data.subarray(p); // 优化：使用 subarray
 }
 
 async function pipeToClient(reader, writer) {
