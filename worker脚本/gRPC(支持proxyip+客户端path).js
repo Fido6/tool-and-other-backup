@@ -24,7 +24,7 @@ let cachedExternalBlacklist = null;
 let lastFetchTime = 0;
 const CACHE_TTL = 3600 * 1000; // 缓存 1 小时
 
-// ✅ 获取并解析外部黑名单
+// 获取并解析外部黑名单
 async function getExternalBlacklist() {
   const now = Date.now();
   if (cachedExternalBlacklist && (now - lastFetchTime < CACHE_TTL)) {
@@ -79,7 +79,7 @@ async function getExternalBlacklist() {
   }
 }
 
-// ✅ 检查域名是否在黑名单中
+// 检查域名是否在黑名单中
 function isBlacklisted(host, externalList) {
   const hostLower = host.toLowerCase();
   
@@ -96,13 +96,13 @@ function isBlacklisted(host, externalList) {
   }
 }
 
-// ✅ UUID 转换工具函数
+// UUID 转换工具函数
 const buildUUID = (a, i) => Array.from(a.slice(i, i + 16))
   .map(n => n.toString(16).padStart(2, '0'))
   .join('')
   .replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5');
 
-// ✅ 解析地址端口
+// 解析地址端口
 async function 解析地址端口(proxyIP) {
   proxyIP = proxyIP.toLowerCase();
   let 地址 = proxyIP, 端口 = 443;
@@ -123,7 +123,7 @@ async function 解析地址端口(proxyIP) {
   return [地址, 端口];
 }
 
-// ✅ 动态反代参数获取
+// 动态反代参数获取
 async function 反代参数获取(request, 当前反代IP) {
   const url = new URL(request.url);
   const { pathname, searchParams } = url;
@@ -140,8 +140,8 @@ async function 反代参数获取(request, 当前反代IP) {
   return 当前反代IP ? 当前反代IP : request.cf.colo + '.PrOxYip.CmLiuSsSs.nEt';
 }
 
-// ✅ 提取 VLESS 信息
-const extractVlessFromProtobuf = (rawPayload) => {
+// 提取 VLS 信息
+const extractVlsFromProtobuf = (rawPayload) => {
   try {
     let ptr = 0;
     if (rawPayload[ptr] !== 0x0A) return null;
@@ -172,9 +172,9 @@ const extractVlessFromProtobuf = (rawPayload) => {
       case 3: l = 16; if (o2 + l > rawPayload.length) return null; h = `[${Array.from({ length: 8 }, (_, i) => ((rawPayload[o2 + i * 2] << 8) | rawPayload[o2 + i * 2 + 1]).toString(16)).join(':')}]`; break;
       default: return null;
     }
-    return { host: h, port: p, vlessPayload: rawPayload.slice(o2 + l), version, clientUUID };
+    return { host: h, port: p, vlsPayload: rawPayload.slice(o2 + l), version, clientUUID };
   } catch (e) {
-    console.error(`[VLESS解析失败]`, e.message);
+    console.error(`[VLS解析失败]`, e.message);
     return null;
   }
 };
@@ -263,10 +263,10 @@ async function processStream(clientReader, responseWriter, proxyIP, externalList
           
           if (isFirst) {
             isFirst = false;
-            const vlessInfo = extractVlessFromProtobuf(grpcData);
-            if (!vlessInfo) throw new Error('无效的 VLESS 负载');
+            const vlsInfo = extractVlsFromProtobuf(grpcData);
+            if (!vlsInfo) throw new Error('无效的 VLS 负载');
             
-            const { host, port, vlessPayload, version, clientUUID } = vlessInfo;
+            const { host, port, vlsPayload, version, clientUUID } = vlsInfo;
 
             if (clientUUID !== UUID) {
               console.error(`[鉴权失败] UUID 不匹配: ${clientUUID}`);
@@ -296,7 +296,7 @@ async function processStream(clientReader, responseWriter, proxyIP, externalList
             
             pipeToClient(reader, responseWriter);
             
-            if (vlessPayload.length > 0) await writer.write(vlessPayload);
+            if (vlsPayload.length > 0) await writer.write(vlsPayload);
           } else {
             const pureData = stripProtobufHeader(grpcData);
             if (writer) await writer.write(pureData);
