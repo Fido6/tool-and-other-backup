@@ -8,7 +8,7 @@ let 反代IP = 'sg.wogg.us.kg';
 // 是否开启外部黑名单开关true或者false，设置为true则只使用链接里的规则，设置为false则只使用BLACKLIST硬编码
 const ENABLE_EXTERNAL_BLACKLIST = true;
 // 外部黑名单url地址，支持正则，格式参考下面的链接，不支持adblock语法
-const EXTERNAL_URL = 'https://raw.githubusercontent.com/Pideo1/bbbfg/refs/heads/main/blacklist.txt'; 
+const EXTERNAL_URL = 'https://raw.githubusercontent.com/Pideo1/bbbfg/refs/heads/main/blacklist.txt';
 const BLACKLIST = [
   'ads.google.com',
   'e.qq.com',
@@ -16,7 +16,7 @@ const BLACKLIST = [
   'analytics.google.com'
 ];
 
-// 限制单个 gRPC 帧最大为 4MB
+// 限制单个 gRPC 帧最大为 4MB，防止恶意攻击导致内存溢出
 const MAX_GRPC_FRAME_SIZE = 4 * 1024 * 1024;
 
 // --- 外部黑名单缓存变量 ---
@@ -24,7 +24,7 @@ let cachedExternalBlacklist = null;
 let lastFetchTime = 0;
 const CACHE_TTL = 3600 * 1000; // 缓存 1 小时
 
-// 获取并解析外部黑名单
+// ✅ 获取并解析外部黑名单
 async function getExternalBlacklist() {
   const now = Date.now();
   if (cachedExternalBlacklist && (now - lastFetchTime < CACHE_TTL)) {
@@ -32,9 +32,8 @@ async function getExternalBlacklist() {
   }
   
   try {
-    console.log(`[外部黑名单] 正在从 ${EXTERNAL_URL} 获取...`);
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5秒超时
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
     
     const response = await fetch(EXTERNAL_URL, { 
       signal: controller.signal,
@@ -42,44 +41,33 @@ async function getExternalBlacklist() {
     });
     clearTimeout(timeoutId);
     
-    if (!response.ok) throw new Error(`HTTP 状态码: ${response.status}`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     
     const text = await response.text();
     const lines = text.split('\n');
     const regexes = [];
 
     for (let line of lines) {
-      // 1. 处理注释：去掉 # 及其后面的内容
       const commentIndex = line.indexOf('#');
-      if (commentIndex !== -1) {
-        line = line.substring(0, commentIndex);
-      }
-      
-      // 2. 去掉首尾空格
+      if (commentIndex !== -1) line = line.substring(0, commentIndex);
       const pattern = line.trim();
-      
-      // 3. 过滤空行
       if (!pattern) continue;
 
       try {
         regexes.push(new RegExp(pattern, 'i'));
-      } catch (e) {
-        console.error(`[正则编译失败] 模式: ${pattern}, 原因: ${e.message}`);
-      }
+      } catch (e) {}
     }
     
     cachedExternalBlacklist = regexes;
     lastFetchTime = now;
-    console.log(`[外部黑名单] 更新成功，包含 ${cachedExternalBlacklist.length} 条有效规则`);
     return cachedExternalBlacklist;
   } catch (e) {
     console.error(`[外部黑名单获取失败]`, e.message);
-    // 如果获取失败且没有缓存，返回空数组；如果有缓存则继续使用旧缓存
     return cachedExternalBlacklist || [];
   }
 }
 
-// 检查域名是否在黑名单中
+// ✅ 检查域名是否在黑名单中
 function isBlacklisted(host, externalList) {
   const hostLower = host.toLowerCase();
   
@@ -96,13 +84,13 @@ function isBlacklisted(host, externalList) {
   }
 }
 
-// UUID 转换工具函数
+// ✅ UUID 转换工具函数
 const buildUUID = (a, i) => Array.from(a.slice(i, i + 16))
   .map(n => n.toString(16).padStart(2, '0'))
   .join('')
   .replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5');
 
-// 解析地址端口
+// ✅ 解析地址端口
 async function 解析地址端口(proxyIP) {
   proxyIP = proxyIP.toLowerCase();
   let 地址 = proxyIP, 端口 = 443;
@@ -123,24 +111,18 @@ async function 解析地址端口(proxyIP) {
   return [地址, 端口];
 }
 
-// 动态反代参数获取
+// ✅ 动态反代参数获取
 async function 反代参数获取(request, 当前反代IP) {
   const url = new URL(request.url);
-  const { pathname, searchParams } = url;
-  const pathLower = pathname.toLowerCase();
+  const { searchParams } = url;
   if (searchParams.has('proxyip')) {
     const 路参IP = searchParams.get('proxyip');
     return 路参IP.includes(',') ? 路参IP.split(',')[Math.floor(Math.random() * 路参IP.split(',').length)] : 路参IP;
   }
-  const proxyMatch = pathLower.match(/\/(proxyip[.=]|pyip=|ip=)([^/]+)/);
-  if (proxyMatch) {
-    const 路参IP = proxyMatch[1] === 'proxyip.' ? `proxyip.${proxyMatch[2]}` : proxyMatch[2];
-    return 路参IP.includes(',') ? 路参IP.split(',')[Math.floor(Math.random() * 路参IP.split(',').length)] : 路参IP;
-  }
-  return 当前反代IP ? 当前反代IP : request.cf.colo + '.PrOxYip.CmLiuSsSs.nEt';
+  return 当前反代IP;
 }
 
-// 提取 VLS 信息
+// ✅ 提取 VLS 信息 (恢复原始稳定的逻辑)
 const extractVlsFromProtobuf = (rawPayload) => {
   try {
     let ptr = 0;
@@ -167,14 +149,13 @@ const extractVlsFromProtobuf = (rawPayload) => {
     const t = rawPayload[o1 + 3];
     let o2 = o1 + 4, h, l;
     switch (t) {
-      case 1: l = 4; if (o2 + l > rawPayload.length) return null; h = rawPayload.slice(o2, o2 + l).join('.'); break;
-      case 2: l = rawPayload[o2++]; if (o2 + l > rawPayload.length) return null; h = new TextDecoder().decode(rawPayload.slice(o2, o2 + l)); break;
+      case 1: l = 4; if (o2 + l > rawPayload.length) return null; h = rawPayload.subarray(o2, o2 + l).join('.'); break;
+      case 2: l = rawPayload[o2++]; if (o2 + l > rawPayload.length) return null; h = new TextDecoder().decode(rawPayload.subarray(o2, o2 + l)); break;
       case 3: l = 16; if (o2 + l > rawPayload.length) return null; h = `[${Array.from({ length: 8 }, (_, i) => ((rawPayload[o2 + i * 2] << 8) | rawPayload[o2 + i * 2 + 1]).toString(16)).join(':')}]`; break;
       default: return null;
     }
-    return { host: h, port: p, vlsPayload: rawPayload.slice(o2 + l), version, clientUUID };
+    return { host: h, port: p, vlsPayload: rawPayload.subarray(o2 + l), version, clientUUID };
   } catch (e) {
-    console.error(`[VLS解析失败]`, e.message);
     return null;
   }
 };
@@ -203,38 +184,33 @@ const makeProtobufGrpcFrame = (data) => {
 
 export default {
   async fetch(request) {
-    try {
-      const contentType = request.headers.get('content-type') || '';
-      if (request.method !== 'POST' || !contentType.startsWith('application/grpc')) {
-        return new Response('Not Found', { status: 404 });
-      }
-
-      let externalList = null;
-      if (ENABLE_EXTERNAL_BLACKLIST) {
-        externalList = await getExternalBlacklist();
-      }
-
-      const 当前反代IP = await 反代参数获取(request, 反代IP);
-      const { readable, writable } = new TransformStream();
-      const responseWriter = writable.getWriter();
-      
-      processStream(request.body.getReader(), responseWriter, 当前反代IP, externalList).catch(e => {
-        console.error(`[流任务异常]`, e.message);
-      });
-
-      return new Response(readable, {
-        status: 200,
-        headers: { 'Content-Type': 'application/grpc', 'grpc-status': '0' }
-      });
-    } catch (e) {
-      console.error(`[Fetch异常]`, e.message);
-      return new Response('Internal Error', { status: 500 });
+    const contentType = request.headers.get('content-type') || '';
+    if (request.method !== 'POST' || !contentType.startsWith('application/grpc')) {
+      return new Response('Not Found', { status: 404 });
     }
+
+    let externalList = null;
+    if (ENABLE_EXTERNAL_BLACKLIST) {
+      externalList = await getExternalBlacklist();
+    }
+
+    const 当前反代IP = await 反代参数获取(request, 反代IP);
+    const { readable, writable } = new TransformStream();
+    
+    processStream(request.body.getReader(), writable.getWriter(), 当前反代IP, externalList).catch(e => {
+      console.error(`[流处理异常]`, e.message);
+    });
+
+    return new Response(readable, {
+      status: 200,
+      headers: { 'Content-Type': 'application/grpc', 'grpc-status': '0' }
+    });
   }
 };
 
 async function processStream(clientReader, responseWriter, proxyIP, externalList) {
-  let buffer = new Uint8Array(0);
+  let chunks = [];
+  let totalLen = 0;
   let socket = null, writer = null, reader = null, isFirst = true;
 
   try {
@@ -242,46 +218,48 @@ async function processStream(clientReader, responseWriter, proxyIP, externalList
       const { done, value } = await clientReader.read();
       if (done) break;
 
-      // 优化：合并数据包，限制总大小
-      if (buffer.length + value.length > MAX_GRPC_FRAME_SIZE * 2) {
-        throw new Error('Buffer overflow');
+      chunks.push(value);
+      totalLen += value.length;
+
+      // 如果数据量太小（连 gRPC 头部都不够），继续读取
+      if (totalLen < 5) continue;
+
+      // 只有在需要处理数据时才进行大块合并，减少开销
+      let buffer = new Uint8Array(totalLen);
+      let offset = 0;
+      for (const chunk of chunks) {
+        buffer.set(chunk, offset);
+        offset += chunk.length;
       }
-      const newBuffer = new Uint8Array(buffer.length + value.length);
-      newBuffer.set(buffer);
-      newBuffer.set(value, buffer.length);
-      buffer = newBuffer;
 
-      while (buffer.length >= 5) {
-        const grpcLen = ((buffer[1] << 24) >>> 0) | (buffer[2] << 16) | (buffer[3] << 8) | buffer[4];
+      let pos = 0;
+      while (totalLen - pos >= 5) {
+        const grpcLen = ((buffer[pos+1] << 24) >>> 0) | (buffer[pos+2] << 16) | (buffer[pos+3] << 8) | buffer[pos+4];
         
-        if (grpcLen > MAX_GRPC_FRAME_SIZE) {
-          throw new Error(`gRPC 帧过大: ${grpcLen}`);
-        }
+        if (grpcLen > MAX_GRPC_FRAME_SIZE) throw new Error(`gRPC 帧超过限制: ${grpcLen}`);
 
-        if (buffer.length >= 5 + grpcLen) {
-          const grpcData = buffer.subarray(5, 5 + grpcLen);
+        if (totalLen - pos >= 5 + grpcLen) {
+          const grpcData = buffer.subarray(pos + 5, pos + 5 + grpcLen);
           
           if (isFirst) {
             isFirst = false;
             const vlsInfo = extractVlsFromProtobuf(grpcData);
             if (!vlsInfo) throw new Error('无效的 VLS 负载');
             
-            const { host, port, vlsPayload, version, clientUUID } = vlsInfo;
-
-            if (clientUUID !== UUID) {
-              console.error(`[鉴权失败] UUID 不匹配: ${clientUUID}`);
-              throw new Error('Invalid UUID');
+            if (vlsInfo.clientUUID !== UUID) {
+              console.error(`[鉴权失败] 客户端 UUID: ${vlsInfo.clientUUID} 不匹配！`);
+              throw new Error('鉴权验证失败');
             }
 
-            if (isBlacklisted(host, externalList)) {
-              console.warn(`[拦截] 命中黑名单: ${host}`);
-              throw new Error(`Access denied: ${host}`);
+            if (isBlacklisted(vlsInfo.host, externalList)) {
+              console.warn(`[拦截] 命中黑名单规则: ${vlsInfo.host}`);
+              throw new Error(`Access denied to blacklisted host: ${vlsInfo.host}`);
             }
 
-            console.log(`[连接] 目标: ${host}:${port}`);
+            console.log(`[连接] 目标: ${vlsInfo.host}:${vlsInfo.port}`);
 
             try {
-              socket = connect({ hostname: host, port: port });
+              socket = connect({ hostname: vlsInfo.host, port: vlsInfo.port });
               await socket.opened;
             } catch (err) {
               const [反代IP地址, 反代IP端口] = await 解析地址端口(proxyIP);
@@ -292,25 +270,29 @@ async function processStream(clientReader, responseWriter, proxyIP, externalList
 
             writer = socket.writable.getWriter();
             reader = socket.readable.getReader();
-            await responseWriter.write(makeProtobufGrpcFrame(new Uint8Array([version, 0])));
+            await responseWriter.write(makeProtobufGrpcFrame(new Uint8Array([vlsInfo.version, 0])));
             
             pipeToClient(reader, responseWriter);
             
-            if (vlsPayload.length > 0) await writer.write(vlsPayload);
+            if (vlsInfo.vlsPayload.length > 0) await writer.write(vlsInfo.vlsPayload);
           } else {
             const pureData = stripProtobufHeader(grpcData);
             if (writer) await writer.write(pureData);
           }
           
-          // 消耗已处理的数据，使用 subarray 避免内存拷贝
-          buffer = buffer.subarray(5 + grpcLen);
+          pos += 5 + grpcLen;
         } else {
           break;
         }
       }
+
+      // 保留未消费的数据，重置 chunks
+      if (pos > 0) {
+        const remained = buffer.subarray(pos);
+        chunks = remained.length > 0 ? [remained] : [];
+        totalLen = remained.length;
+      }
     }
-  } catch (e) {
-    console.error(`[流处理异常]`, e.message);
   } finally {
     cleanup(socket, writer, reader, responseWriter);
   }
@@ -320,7 +302,7 @@ function stripProtobufHeader(data) {
   if (data.length === 0 || data[0] !== 0x0A) return data;
   let p = 1;
   while (p < data.length && (data[p++] & 0x80));
-  return data.subarray(p); // 优化：使用 subarray
+  return data.subarray(p);
 }
 
 async function pipeToClient(reader, writer) {
@@ -331,19 +313,12 @@ async function pipeToClient(reader, writer) {
       await writer.write(makeProtobufGrpcFrame(value));
     }
   } catch (e) {
-    console.error(`[转发异常]`, e.message);
   } finally {
     try { await writer.close(); } catch(e) {}
   }
 }
 
 function cleanup(s, w, r, rw) {
-  try { 
-    if (w) w.releaseLock(); 
-    if (r) r.releaseLock(); 
-    if (s) s.close(); 
-  } catch(e) {}
-  try { 
-    if (rw) rw.close(); 
-  } catch(e) {}
+  try { w?.releaseLock(); r?.releaseLock(); s?.close(); } catch(e) {}
+  try { rw.close(); } catch(e) {}
 }
