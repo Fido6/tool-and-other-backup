@@ -16,170 +16,50 @@ const BLACKLIST = [
   'analytics.google.com'
 ];
 
-// 限制单个 gRPC 帧最大为 4MB
 const MAX_GRPC_FRAME_SIZE = 4 * 1024 * 1024;
-
-// --- 外部黑名单缓存变量 ---
 let cachedExternalBlacklist = null;
 let lastFetchTime = 0;
-const CACHE_TTL = 3600 * 1000; // 缓存 1 小时
+const CACHE_TTL = 3600 * 1000;
 
-// 获取并解析外部黑名单
+// ✅ 获取并解析外部黑名单
 async function getExternalBlacklist() {
   const now = Date.now();
-  if (cachedExternalBlacklist && (now - lastFetchTime < CACHE_TTL)) {
-    return cachedExternalBlacklist;
-  }
-  
+  if (cachedExternalBlacklist && (now - lastFetchTime < CACHE_TTL)) return cachedExternalBlacklist;
   try {
-    console.log(`[外部黑名单] 正在从 ${EXTERNAL_URL} 获取...`);
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5秒超时
-    
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
     const response = await fetch(EXTERNAL_URL, { 
       signal: controller.signal,
       headers: { 'User-Agent': 'Cloudflare-Worker-Proxy' }
     });
     clearTimeout(timeoutId);
-    
-    if (!response.ok) throw new Error(`HTTP 状态码: ${response.status}`);
-    
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const text = await response.text();
-    const lines = text.split('\n');
-    const regexes = [];
-
-    for (let line of lines) {
-      // 1. 处理注释：去掉 # 及其后面的内容
-      const commentIndex = line.indexOf('#');
-      if (commentIndex !== -1) {
-        line = line.substring(0, commentIndex);
-      }
-      
-      // 2. 去掉首尾空格
-      const pattern = line.trim();
-      
-      // 3. 过滤空行
-      if (!pattern) continue;
-
-      try {
-        regexes.push(new RegExp(pattern, 'i'));
-      } catch (e) {
-        console.error(`[正则编译失败] 模式: ${pattern}, 原因: ${e.message}`);
-      }
-    }
-    
+    const regexes = text.split('\n').map(line => {
+      const c = line.indexOf('#');
+      const p = (c !== -1 ? line.substring(0, c) : line).trim();
+      if (!p) return null;
+      try { return new RegExp(p, 'i'); } catch (e) { return null; }
+    }).filter(r => r !== null);
     cachedExternalBlacklist = regexes;
     lastFetchTime = now;
-    console.log(`[外部黑名单] 更新成功，包含 ${cachedExternalBlacklist.length} 条有效规则`);
     return cachedExternalBlacklist;
   } catch (e) {
-    console.error(`[外部黑名单获取失败]`, e.message);
-    // 如果获取失败且没有缓存，返回空数组；如果有缓存则继续使用旧缓存
     return cachedExternalBlacklist || [];
   }
 }
 
-// 检查域名是否在黑名单中
+// ✅ 检查域名是否在黑名单中
 function isBlacklisted(host, externalList) {
-  const hostLower = host.toLowerCase();
-  
+  const h = host.toLowerCase();
   if (ENABLE_EXTERNAL_BLACKLIST) {
-    if (externalList && externalList.length > 0) {
-      return externalList.some(regex => regex.test(hostLower));
-    }
-    return false;
-  } else {
-    return BLACKLIST.some(blocked => {
-      const blockedLower = blocked.toLowerCase();
-      return hostLower === blockedLower || hostLower.endsWith('.' + blockedLower);
-    });
+    return externalList?.some(r => r.test(h)) || false;
   }
+  return BLACKLIST.some(b => h === b.toLowerCase() || h.endsWith('.' + b.toLowerCase()));
 }
 
-// UUID 转换工具函数
-const buildUUID = (a, i) => Array.from(a.slice(i, i + 16))
-  .map(n => n.toString(16).padStart(2, '0'))
-  .join('')
-  .replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5');
-
-// 解析地址端口
-async function 解析地址端口(proxyIP) {
-  proxyIP = proxyIP.toLowerCase();
-  let 地址 = proxyIP, 端口 = 443;
-  if (proxyIP.includes('.tp')) {
-    const tpMatch = proxyIP.match(/\.tp(\d+)/);
-    if (tpMatch) 端口 = parseInt(tpMatch[1], 10);
-    return [地址, 端口];
-  }
-  if (proxyIP.includes(']:')) {
-    const parts = proxyIP.split(']:');
-    地址 = parts[0] + ']';
-    端口 = parseInt(parts[1], 10) || 端口;
-  } else if (proxyIP.includes(':') && !proxyIP.startsWith('[')) {
-    const colonIndex = proxyIP.lastIndexOf(':');
-    地址 = proxyIP.slice(0, colonIndex);
-    端口 = parseInt(proxyIP.slice(colonIndex + 1), 10) || 端口;
-  }
-  return [地址, 端口];
-}
-
-// 动态反代参数获取
-async function 反代参数获取(request, 当前反代IP) {
-  const url = new URL(request.url);
-  const { pathname, searchParams } = url;
-  const pathLower = pathname.toLowerCase();
-  if (searchParams.has('proxyip')) {
-    const 路参IP = searchParams.get('proxyip');
-    return 路参IP.includes(',') ? 路参IP.split(',')[Math.floor(Math.random() * 路参IP.split(',').length)] : 路参IP;
-  }
-  const proxyMatch = pathLower.match(/\/(proxyip[.=]|pyip=|ip=)([^/]+)/);
-  if (proxyMatch) {
-    const 路参IP = proxyMatch[1] === 'proxyip.' ? `proxyip.${proxyMatch[2]}` : proxyMatch[2];
-    return 路参IP.includes(',') ? 路参IP.split(',')[Math.floor(Math.random() * 路参IP.split(',').length)] : 路参IP;
-  }
-  return 当前反代IP ? 当前反代IP : request.cf.colo + '.PrOxYip.CmLiuSsSs.nEt';
-}
-
-// 提取 VLS 信息
-const extractVlsFromProtobuf = (rawPayload) => {
-  try {
-    let ptr = 0;
-    if (rawPayload[ptr] !== 0x0A) return null;
-    ptr++;
-    let len = 0, shift = 0;
-    while (ptr < rawPayload.length) {
-      let b = rawPayload[ptr++];
-      len |= (b & 0x7F) << shift;
-      if (!(b & 0x80)) break;
-      shift += 7;
-    }
-    const start = ptr;
-    if (start + 17 > rawPayload.length) return null;
-
-    const version = rawPayload[start];
-    const clientUUID = buildUUID(rawPayload, start + 1);
-    
-    const addonLen = rawPayload[start + 17];
-    const o1 = start + 18 + addonLen;
-    if (o1 + 4 > rawPayload.length) return null;
-
-    const p = (rawPayload[o1 + 1] << 8) | rawPayload[o1 + 2];
-    const t = rawPayload[o1 + 3];
-    let o2 = o1 + 4, h, l;
-    switch (t) {
-      case 1: l = 4; if (o2 + l > rawPayload.length) return null; h = rawPayload.slice(o2, o2 + l).join('.'); break;
-      case 2: l = rawPayload[o2++]; if (o2 + l > rawPayload.length) return null; h = new TextDecoder().decode(rawPayload.slice(o2, o2 + l)); break;
-      case 3: l = 16; if (o2 + l > rawPayload.length) return null; h = `[${Array.from({ length: 8 }, (_, i) => ((rawPayload[o2 + i * 2] << 8) | rawPayload[o2 + i * 2 + 1]).toString(16)).join(':')}]`; break;
-      default: return null;
-    }
-    return { host: h, port: p, vlsPayload: rawPayload.slice(o2 + l), version, clientUUID };
-  } catch (e) {
-    console.error(`[VLS解析失败]`, e.message);
-    return null;
-  }
-};
-
-const makeProtobufGrpcFrame = (data) => {
+// ✅ 优化后的 gRPC 帧构建 (单次分配，极低 CPU 消耗)
+function makeProtobufGrpcFrame(data) {
   const len = data.length;
   let varint = [], tempLen = len;
   while (tempLen > 127) {
@@ -187,163 +67,163 @@ const makeProtobufGrpcFrame = (data) => {
     tempLen >>>= 7;
   }
   varint.push(tempLen);
-  const pbHeader = new Uint8Array([0x0A, ...varint]);
-  const totalPayload = new Uint8Array(pbHeader.length + data.length);
-  totalPayload.set(pbHeader);
-  totalPayload.set(data, pbHeader.length);
-  const grpcFrame = new Uint8Array(5 + totalPayload.length);
-  grpcFrame[0] = 0;
-  grpcFrame[1] = (totalPayload.length >>> 24) & 0xFF;
-  grpcFrame[2] = (totalPayload.length >>> 16) & 0xFF;
-  grpcFrame[3] = (totalPayload.length >>> 8) & 0xFF;
-  grpcFrame[4] = totalPayload.length & 0xFF;
-  grpcFrame.set(totalPayload, 5);
-  return grpcFrame;
+  
+  const totalPayloadLen = 1 + varint.length + len; // 0x0A + varint + data
+  const frame = new Uint8Array(5 + totalPayloadLen);
+  
+  // gRPC Header
+  frame[0] = 0;
+  frame[1] = (totalPayloadLen >>> 24) & 0xFF;
+  frame[2] = (totalPayloadLen >>> 16) & 0xFF;
+  frame[3] = (totalPayloadLen >>> 8) & 0xFF;
+  frame[4] = totalPayloadLen & 0xFF;
+  
+  // Protobuf
+  frame[5] = 0x0A;
+  frame.set(varint, 6);
+  frame.set(data, 6 + varint.length);
+  return frame;
+}
+
+const buildUUID = (a, i) => Array.from(a.slice(i, i + 16)).map(n => n.toString(16).padStart(2, '0')).join('').replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5');
+
+async function 解析地址端口(pIP) {
+  const p = pIP.toLowerCase();
+  let a = p, pt = 443;
+  if (p.includes('.tp')) pt = parseInt(p.match(/\.tp(\d+)/)?.[1] || 443);
+  else if (p.includes(']:')) { const s = p.split(']:'); a = s[0] + ']'; pt = parseInt(s[1]) || 443; }
+  else if (p.includes(':') && !p.startsWith('[')) { const c = p.lastIndexOf(':'); a = p.slice(0, c); pt = parseInt(p.slice(c + 1)) || 443; }
+  return [a, pt];
+}
+
+async function 反代参数获取(req, cur) {
+  const url = new URL(req.url);
+  if (url.searchParams.has('proxyip')) return url.searchParams.get('proxyip');
+  return cur;
+}
+
+const extractVlessInfo = (raw) => {
+  try {
+    let ptr = 0;
+    if (raw[ptr++] !== 0x0A) return null;
+    let len = 0, shift = 0;
+    while (ptr < raw.length) {
+      let b = raw[ptr++];
+      len |= (b & 0x7F) << shift;
+      if (!(b & 0x80)) break;
+      shift += 7;
+    }
+    const start = ptr;
+    const version = raw[start];
+    const clientUUID = buildUUID(raw, start + 1);
+    const addonLen = raw[start + 17];
+    const o1 = start + 18 + addonLen;
+    const p = (raw[o1 + 1] << 8) | raw[o1 + 2], t = raw[o1 + 3];
+    let o2 = o1 + 4, h, l;
+    if (t === 1) { h = raw.slice(o2, o2 + 4).join('.'); l = 4; }
+    else if (t === 2) { l = raw[o2++]; h = new TextDecoder().decode(raw.slice(o2, o2 + l)); }
+    else if (t === 3) { h = 'ipv6-address'; l = 16; } // 简化提取
+    return { host: h, port: p, payload: raw.subarray(o2 + l), version, clientUUID };
+  } catch (e) { return null; }
 };
 
 export default {
   async fetch(request) {
-    try {
-      const contentType = request.headers.get('content-type') || '';
-      if (request.method !== 'POST' || !contentType.startsWith('application/grpc')) {
-        return new Response('Not Found', { status: 404 });
-      }
-
-      let externalList = null;
-      if (ENABLE_EXTERNAL_BLACKLIST) {
-        externalList = await getExternalBlacklist();
-      }
-
-      const 当前反代IP = await 反代参数获取(request, 反代IP);
-      const { readable, writable } = new TransformStream();
-      const responseWriter = writable.getWriter();
-      
-      processStream(request.body.getReader(), responseWriter, 当前反代IP, externalList).catch(e => {
-        console.error(`[流任务异常]`, e.message);
-      });
-
-      return new Response(readable, {
-        status: 200,
-        headers: { 'Content-Type': 'application/grpc', 'grpc-status': '0' }
-      });
-    } catch (e) {
-      console.error(`[Fetch异常]`, e.message);
-      return new Response('Internal Error', { status: 500 });
-    }
+    const ct = request.headers.get('content-type') || '';
+    if (request.method !== 'POST' || !ct.startsWith('application/grpc')) return new Response('Not Found', { status: 404 });
+    const ext = ENABLE_EXTERNAL_BLACKLIST ? await getExternalBlacklist() : null;
+    const pip = await 反代参数获取(request, 反代IP);
+    const { readable, writable } = new TransformStream();
+    processStream(request.body.getReader(), writable.getWriter(), pip, ext).catch(e => console.error(`[流处理异常]`, e.message));
+    return new Response(readable, { status: 200, headers: { 'Content-Type': 'application/grpc', 'grpc-status': '0' } });
   }
 };
 
 async function processStream(clientReader, responseWriter, proxyIP, externalList) {
-  let buffer = new Uint8Array(0);
-  let socket = null, writer = null, reader = null, isFirst = true;
+  let leftover = null;
+  let socket, writer, reader, isFirst = true;
 
   try {
     while (true) {
       const { done, value } = await clientReader.read();
       if (done) break;
 
-      // 优化：合并数据包，限制总大小
-      if (buffer.length + value.length > MAX_GRPC_FRAME_SIZE * 2) {
-        throw new Error('Buffer overflow');
+      let buffer;
+      if (leftover && leftover.length > 0) {
+        buffer = new Uint8Array(leftover.length + value.length);
+        buffer.set(leftover);
+        buffer.set(value, leftover.length);
+      } else {
+        buffer = value;
       }
-      const newBuffer = new Uint8Array(buffer.length + value.length);
-      newBuffer.set(buffer);
-      newBuffer.set(value, buffer.length);
-      buffer = newBuffer;
 
-      while (buffer.length >= 5) {
-        const grpcLen = ((buffer[1] << 24) >>> 0) | (buffer[2] << 16) | (buffer[3] << 8) | buffer[4];
-        
-        if (grpcLen > MAX_GRPC_FRAME_SIZE) {
-          throw new Error(`gRPC 帧过大: ${grpcLen}`);
-        }
+      let pos = 0;
+      while (buffer.length - pos >= 5) {
+        const grpcLen = ((buffer[pos+1] << 24) >>> 0) | (buffer[pos+2] << 16) | (buffer[pos+3] << 8) | buffer[pos+4];
+        if (grpcLen > MAX_GRPC_FRAME_SIZE) throw new Error(`帧过大: ${grpcLen}`);
 
-        if (buffer.length >= 5 + grpcLen) {
-          const grpcData = buffer.subarray(5, 5 + grpcLen);
-          
+        if (buffer.length - pos >= 5 + grpcLen) {
+          const grpcData = buffer.subarray(pos + 5, pos + 5 + grpcLen);
           if (isFirst) {
             isFirst = false;
-            const vlsInfo = extractVlsFromProtobuf(grpcData);
-            if (!vlsInfo) throw new Error('无效的 VLS 负载');
-            
-            const { host, port, vlsPayload, version, clientUUID } = vlsInfo;
-
-            if (clientUUID !== UUID) {
-              console.error(`[鉴权失败] UUID 不匹配: ${clientUUID}`);
-              throw new Error('Invalid UUID');
+            const info = extractVlessInfo(grpcData);
+            if (!info) throw new Error('无效负载');
+            if (info.clientUUID !== UUID) {
+              console.error(`[鉴权失败] 客户端 UUID: ${info.clientUUID} 不匹配！`);
+              throw new Error('鉴权验证失败');
             }
-
-            if (isBlacklisted(host, externalList)) {
-              console.warn(`[拦截] 命中黑名单: ${host}`);
-              throw new Error(`Access denied: ${host}`);
+            if (isBlacklisted(info.host, externalList)) {
+              console.warn(`[拦截] 命中黑名单规则: ${info.host}`);
+              throw new Error(`Access denied to: ${info.host}`);
             }
-
-            console.log(`[连接] 目标: ${host}:${port}`);
-
+            console.log(`[连接] 目标: ${info.host}:${info.port}`);
             try {
-              socket = connect({ hostname: host, port: port });
+              socket = connect({ hostname: info.host, port: info.port });
               await socket.opened;
-            } catch (err) {
-              const [反代IP地址, 反代IP端口] = await 解析地址端口(proxyIP);
-              console.log(`[反代] 回退至 ${反代IP地址}:${反代IP端口}`);
-              socket = connect({ hostname: 反代IP地址, port: 反代IP端口 });
+            } catch {
+              const [ah, ap] = await 解析地址端口(proxyIP);
+              socket = connect({ hostname: ah, port: ap });
               await socket.opened;
             }
-
             writer = socket.writable.getWriter();
             reader = socket.readable.getReader();
-            await responseWriter.write(makeProtobufGrpcFrame(new Uint8Array([version, 0])));
-            
+            await responseWriter.write(makeProtobufGrpcFrame(new Uint8Array([info.version, 0])));
             pipeToClient(reader, responseWriter);
-            
-            if (vlsPayload.length > 0) await writer.write(vlsPayload);
+            if (info.payload.length > 0) await writer.write(info.payload);
           } else {
-            const pureData = stripProtobufHeader(grpcData);
-            if (writer) await writer.write(pureData);
+            const pure = stripPb(grpcData);
+            if (writer) await writer.write(pure);
           }
-          
-          // 消耗已处理的数据，使用 subarray 避免内存拷贝
-          buffer = buffer.subarray(5 + grpcLen);
-        } else {
-          break;
-        }
+          pos += 5 + grpcLen;
+        } else break;
       }
+      leftover = buffer.subarray(pos);
     }
-  } catch (e) {
-    console.error(`[流处理异常]`, e.message);
   } finally {
     cleanup(socket, writer, reader, responseWriter);
   }
 }
 
-function stripProtobufHeader(data) {
-  if (data.length === 0 || data[0] !== 0x0A) return data;
-  let p = 1;
-  while (p < data.length && (data[p++] & 0x80));
-  return data.subarray(p); // 优化：使用 subarray
+function stripPb(d) {
+  if (d.length === 0 || d[0] !== 0x0A) return d;
+  let p = 1; while (p < d.length && (d[p++] & 0x80));
+  return d.subarray(p);
 }
 
-async function pipeToClient(reader, writer) {
+async function pipeToClient(r, w) {
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await r.read();
       if (done) break;
-      await writer.write(makeProtobufGrpcFrame(value));
+      await w.write(makeProtobufGrpcFrame(value));
     }
   } catch (e) {
-    console.error(`[转发异常]`, e.message);
   } finally {
-    try { await writer.close(); } catch(e) {}
+    try { await w.close(); } catch(e) {}
   }
 }
 
 function cleanup(s, w, r, rw) {
-  try { 
-    if (w) w.releaseLock(); 
-    if (r) r.releaseLock(); 
-    if (s) s.close(); 
-  } catch(e) {}
-  try { 
-    if (rw) rw.close(); 
-  } catch(e) {}
+  try { w?.releaseLock(); r?.releaseLock(); s?.close(); } catch(e) {}
+  try { rw.close(); } catch(e) {}
 }
