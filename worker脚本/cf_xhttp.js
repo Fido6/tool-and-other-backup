@@ -8,6 +8,8 @@ const SETTINGS = {
     DEFAULT_ENTRY: '/path',
     DEFAULT_REP: '', //反代ip
     CHUNK_SIZE: 16 * 1024,
+    //黑名单
+    BLOCK_LIST: ['ads.google.com', 'e.qq.com', 'doubleclick.net', 'analytics.google.com', 'fundingchoicesmessages.google.com', 'pagead2.googlesyndication.com'],
     // DoH 接口
     DOH_SERVER: 'https://dns.quad9.net/dns-query',
     // TCP DNS 兜底服务器 (Quad9)
