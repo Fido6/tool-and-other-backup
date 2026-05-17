@@ -17,6 +17,11 @@ const BLACKLIST = [
 ];
 
 const MAX_GRPC_FRAME_SIZE = 4 * 1024 * 1024;
+// 回程（上游->客户端）聚合阈值：越大越省 CPU/分配次数，但单帧延迟与内存占用略升。
+// 对 fast.com / 大文件下载，建议 64KB~256KB。
+const COALESCE_CHUNK_SIZE = 128 * 1024;
+// 可选：允许在低流量时尽快 flush，避免一直攒着不发（单位 ms）
+const COALESCE_MAX_DELAY_MS = 8;
 let cachedExternalBlacklist = null;
 let lastFetchTime = 0;
 const CACHE_TTL = 3600 * 1000;
@@ -35,10 +40,14 @@ async function getExternalBlacklist() {
     clearTimeout(timeoutId);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const text = await response.text();
-    const regexes = text.split('\n').map(line => {
+    // 保护：过多/过长规则会显著增加 CPU（尤其在你频繁断线重连/续传时）
+    const MAX_RULES = 2000;
+    const MAX_LINE_LENGTH = 256;
+    const regexes = text.split('\n').slice(0, MAX_RULES).map(line => {
       const c = line.indexOf('#');
       const p = (c !== -1 ? line.substring(0, c) : line).trim();
       if (!p) return null;
+      if (p.length > MAX_LINE_LENGTH) return null;
       try { return new RegExp(p, 'i'); } catch (e) { return null; }
     }).filter(r => r !== null);
     cachedExternalBlacklist = regexes;
@@ -142,6 +151,7 @@ export default {
 async function processStream(clientReader, responseWriter, proxyIP, externalList) {
   let leftover = null;
   let socket, writer, reader, isFirst = true;
+  let pipePromise = null;
 
   try {
     while (true) {
@@ -188,7 +198,8 @@ async function processStream(clientReader, responseWriter, proxyIP, externalList
             writer = socket.writable.getWriter();
             reader = socket.readable.getReader();
             await responseWriter.write(makeProtobufGrpcFrame(new Uint8Array([info.version, 0])));
-            pipeToClient(reader, responseWriter);
+            // 不等待：后台把上游数据持续回写给客户端
+            pipePromise = pipeToClient(reader, responseWriter);
             if (info.payload.length > 0) await writer.write(info.payload);
           } else {
             const pure = stripPb(grpcData);
@@ -199,6 +210,22 @@ async function processStream(clientReader, responseWriter, proxyIP, externalList
       }
       leftover = buffer.subarray(pos);
     }
+
+    // 客户端上行结束（常见于下载/断点续传：请求发送完就 half-close），
+    // 此时不要立刻 cleanup 关闭下行；只关闭写方向，让上游继续把数据发完。
+    try { await writer?.close(); } catch(e) {}
+
+    // 等待回程转发结束（上游结束或出错）
+    if (pipePromise) {
+      try { await pipePromise; } catch(e) {}
+    }
+  } catch (e) {
+    // 首帧阶段（pipePromise 尚未启动）发生错误时，必须 close responseWriter，
+    // 否则 TransformStream 会悬挂，触发 Workers "code had hung"。
+    if (!pipePromise) {
+      try { await responseWriter.close(); } catch(_) {}
+    }
+    throw e;
   } finally {
     cleanup(socket, writer, reader, responseWriter);
   }
@@ -210,13 +237,61 @@ function stripPb(d) {
   return d.subarray(p);
 }
 
+// 将上游返回数据聚合后再打包成 gRPC frame，显著减少 frame 构造次数与内存分配。
 async function pipeToClient(r, w) {
+  let buf = new Uint8Array(COALESCE_CHUNK_SIZE);
+  let used = 0;
+
+  async function flush() {
+    if (used === 0) return;
+    const out = buf.subarray(0, used);
+    used = 0;
+    // 重新分配新 buffer，避免 subarray 共享底层导致覆盖
+    buf = new Uint8Array(COALESCE_CHUNK_SIZE);
+    await w.write(makeProtobufGrpcFrame(out));
+  }
+
+  // 单飞 read + 超时 flush：保证同一时间只有一个 r.read() 在飞行中，避免并发 read() 导致卡死。
+  function sleep(ms) { return new Promise(res => setTimeout(res, ms)); }
+  let pendingRead = null;
+
   try {
     while (true) {
-      const { done, value } = await r.read();
+      if (!pendingRead) pendingRead = r.read();
+      const timeoutPromise = (used > 0) ? sleep(COALESCE_MAX_DELAY_MS).then(() => ({ timeout: true })) : null;
+      const res = timeoutPromise ? await Promise.race([pendingRead, timeoutPromise]) : await pendingRead;
+
+      if (res && res.timeout) {
+        await flush();
+        // 注意：pendingRead 仍在进行中，不能启动新的 read
+        continue;
+      }
+
+      // pendingRead 已完成
+      pendingRead = null;
+      const { done, value } = res;
       if (done) break;
-      await w.write(makeProtobufGrpcFrame(value));
+
+      // 大块直接写出，减少额外拷贝
+      if (value.length >= COALESCE_CHUNK_SIZE) {
+        await flush();
+        await w.write(makeProtobufGrpcFrame(value));
+        continue;
+      }
+
+      if (used + value.length > buf.length) {
+        await flush();
+      }
+
+      buf.set(value, used);
+      used += value.length;
+
+      if (used >= COALESCE_CHUNK_SIZE) {
+        await flush();
+      }
     }
+
+    await flush();
   } catch (e) {
   } finally {
     try { await w.close(); } catch(e) {}
@@ -224,6 +299,9 @@ async function pipeToClient(r, w) {
 }
 
 function cleanup(s, w, r, rw) {
-  try { w?.releaseLock(); r?.releaseLock(); s?.close(); } catch(e) {}
-  try { rw.close(); } catch(e) {}
+  // responseWriter 的 close 由 pipeToClient 负责（避免上行结束导致过早关闭响应流）
+  try { w?.releaseLock(); } catch(e) {}
+  try { r?.releaseLock(); } catch(e) {}
+  try { s?.close(); } catch(e) {}
+  // 不主动 rw.close()
 }
