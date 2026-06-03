@@ -58,7 +58,7 @@ function 路径鉴权(request, env) {
   const url = new URL(request.url);
   const seg = url.pathname.split('/').filter(Boolean);
   const cfgServiceName = 取首个值(env?.ServiceName) ?? CFG.ServiceName;
-  const cfgGrpcMode = ((取首个值(env?.GRPCMODE) ?? CFG.GRPCMODE) || 'Gun').toString().toLowerCase();
+  const cfgGrpcMode = ((取首个值(env?.GRPCMODE) ?? CFG.GRPCMODE) || 'gun').toString().toLowerCase();
   const expectedTail = cfgGrpcMode === 'multi' ? 'TunMulti' : 'Tun';
   const expectedServiceName = cfgServiceName || url.host;
   if (seg.length < 2) return 0;
@@ -120,11 +120,45 @@ const stripProtobufHeader = data => {
   return data.slice(p);
 };
 
-const concatBuffer = (a, b) => {
-  const c = new Uint8Array(a.length + b.length);
-  c.set(a, 0);
-  c.set(b, a.length);
-  return c;
+// ── Ring buffer：替代 concatBuffer，避免每次 read 都分配新 Uint8Array ──
+const mkRingBuf = (cap = 256 * 1024) => {
+  const buf = new Uint8Array(cap);
+  let w = 0, r = 0, len = 0;
+  return {
+    get length() { return len; },
+    get remain() { return cap - len; },
+    ensure(n) { if (len + n > cap) this.compact(); return len + n <= cap; },
+    compact() {
+      if (!r) return;
+      if (len) buf.copyWithin(0, r, r + len);
+      r = 0; w = len;
+    },
+    append(u) {
+      const n = u.byteLength;
+      if (!n) return;
+      if (!this.ensure(n)) this.compact();
+      const tail = cap - w;
+      if (n <= tail) {
+        buf.set(u, w);
+      } else {
+        buf.set(u.subarray(0, tail), w);
+        buf.set(u.subarray(tail), 0);
+      }
+      w = (w + n) % cap;
+      len += n;
+    },
+    peek(n) {
+      if (n > len) return null;
+      if (r + n <= cap) return buf.subarray(r, r + n);
+      const out = new Uint8Array(n);
+      const tail = cap - r;
+      out.set(buf.subarray(r, cap), 0);
+      out.set(buf.subarray(0, n - tail), tail);
+      return out;
+    },
+    skip(n) { r = (r + n) % cap; len -= n; },
+    drain() { r = 0; w = 0; len = 0; },
+  };
 };
 
 const makeGrpcFrame = data => {
@@ -316,7 +350,7 @@ async function processStream(request, clientReader, responseWriter, proxyIP) {
   const fetcher = request.fetcher;
   if (!fetcher?.connect) throw new Error('request.fetcher.connect unavailable');
 
-  let buffer = new Uint8Array(0);
+  const ring = mkRingBuf(256 * 1024);
   let socket = null, writer = null, pump = null, closed = false, busy = false;
   const uq = mkQ(CFG.upPack, CFG.upQMax, CFG.upQMax >> 8);
 
@@ -324,11 +358,10 @@ async function processStream(request, clientReader, responseWriter, proxyIP) {
     if (closed) return;
     closed = true;
     uq.clear();
+    ring.drain();
     try { writer?.releaseLock(); } catch {}
     try { socket?.close(); } catch {}
-    if (forceCloseResponse) {
-      try { await responseWriter.close(); } catch {}
-    }
+    try { await responseWriter.close(); } catch {}
   };
 
   const sow = d => {
@@ -355,7 +388,7 @@ async function processStream(request, clientReader, responseWriter, proxyIP) {
           socket = await connectWithFallback(fetcher, host, port, proxyIP);
           writer = socket.writable.getWriter();
           await responseWriter.write(makeProtobufGrpcFrame(new Uint8Array([version, 0])));
-          pump = pipeToClientByob(socket.readable, responseWriter);
+          pump = pipeToClientByob(socket.readable, responseWriter).catch(() => {});
           const [first] = uq.bundle(vlsPayload);
           if (first?.byteLength) await writer.write(first);
           continue;
@@ -378,15 +411,19 @@ async function processStream(request, clientReader, responseWriter, proxyIP) {
       const { done, value } = await clientReader.read();
       if (done) break;
       if (closed) break;
-      buffer = concatBuffer(buffer, value);
-      while (buffer.length >= 5) {
-        const grpcLen = ((buffer[1] << 24) >>> 0) | (buffer[2] << 16) | (buffer[3] << 8) | buffer[4];
-        if (buffer.length < 5 + grpcLen) break;
-        const grpcData = buffer.slice(5, 5 + grpcLen);
-        buffer = buffer.slice(5 + grpcLen);
-        const pureData = socket ? stripProtobufHeader(grpcData) : grpcData;
+      ring.append(value);
+      let frameCount = 0;
+      for (;;) {
+        if (ring.length < 5) break;
+        const hdr = ring.peek(5);
+        const grpcLen = ((hdr[1] << 24) >>> 0) | (hdr[2] << 16) | (hdr[3] << 8) | hdr[4];
+        if (ring.length < 5 + grpcLen) break;
+        const grpcData = ring.peek(5 + grpcLen);
+        ring.skip(5 + grpcLen);
+        const pureData = socket ? stripProtobufHeader(grpcData.subarray(5)) : grpcData.subarray(5);
         if (!sow(pureData)) break;
         await thresh();
+        if (++frameCount % 4 === 0) await Promise.resolve();
       }
     }
     await pump;
@@ -425,3 +462,4 @@ export default {
     });
   },
 };
+
