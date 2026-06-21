@@ -10,6 +10,26 @@ const CFG = {
   //上面3行按需更改，下面的不用改，前5行建议部署时删掉
   TARGET: '', // 不填写任何东西
   AUTH_TOKEN: '', //这里不要填任何东西
+
+  // ── ACL 地区访问控制 ──
+  // ACL_MODE: 'whitelist' = 白名单模式（仅允许匹配的请求）
+  //          'blacklist' = 黑名单模式（仅拒绝匹配的请求）
+  //          'off'       = 关闭 ACL（允许所有请求）
+  ACL_MODE: 'off',
+  // 白名单/黑名单规则，匹配到即生效，支持 country / region / city / asn
+  // country 和 region 不区分大小写；city 精确匹配_cf.city（Cloudflare 可能返回空串）
+  ACL_RULES: [
+    // 示例：白名单模式下仅允许日本、新加坡、香港地区及 ASN 13335 访问
+    // { country: 'JP' },
+    // { country: 'SG' },
+    // { country: 'HK' },
+    // { asn: 13335 },
+    // 示例：黑名单模式下拒绝西藏拉萨地区及 ASN 9808 访问
+    // { region: 'Xizang' },
+    // { city: 'lasa' },
+    // { asn: 9808 },
+  ],
+
   chunk: 64 * 1024,
   dnPack: 32 * 1024,
   dnTail: 512,
@@ -53,6 +73,56 @@ function 验证Token(request, env) {
   if (url.searchParams.get('token') === cfgToken) return true;
   if (request.headers.get('authorization') === `Bearer ${cfgToken}`) return true;
   return false;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ACL 地区访问控制
+// ═══════════════════════════════════════════════════════════════════
+
+function ACL检查(request, env) {
+  const cfgMode = ((取首个值(env?.ACL_MODE) ?? CFG.ACL_MODE) || 'off').toString().toLowerCase();
+  if (cfgMode === 'off') return true; // ACL 关闭，允许所有
+
+  const rules = 取首个值(env?.ACL_RULES) ?? CFG.ACL_RULES;
+  if (!Array.isArray(rules) || !rules.length) return true; // 无规则，允许所有
+
+  const cf = request.cf || {};
+  const reqCountry = (cf.country || '').toUpperCase();
+  const reqRegion = (cf.region || '');
+  const reqCity = (cf.city || '');
+  const reqAsn = cf.asn ?? -1; // asn 是数字
+
+  console.log('[ACL] 请求地理信息 → country:', reqCountry, 'region:', reqRegion, 'city:', reqCity, 'asn:', reqAsn);
+
+  const hit = rules.some(rule => {
+    if (rule.country && rule.country.toUpperCase() === reqCountry) return true;
+    if (rule.region && rule.region.toLowerCase() === reqRegion.toLowerCase()) return true;
+    if (rule.city && rule.city === reqCity) return true;
+    if (rule.asn != null && Number(rule.asn) === Number(reqAsn)) return true;
+    return false;
+  });
+
+  if (cfgMode === 'whitelist') {
+    // 白名单：匹配到的才放行
+    if (!hit) {
+      console.warn('[ACL] 白名单拦截 → country:', reqCountry, 'region:', reqRegion, 'city:', reqCity, 'asn:', reqAsn);
+      return false;
+    }
+    console.log('[ACL] 白名单放行');
+    return true;
+  }
+
+  if (cfgMode === 'blacklist') {
+    // 黑名单：匹配到的被拒绝
+    if (hit) {
+      console.warn('[ACL] 黑名单拦截 → country:', reqCountry, 'region:', reqRegion, 'city:', reqCity, 'asn:', reqAsn);
+      return false;
+    }
+    console.log('[ACL] 黑名单放行');
+    return true;
+  }
+
+  return true; // 未知模式默认放行
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -509,13 +579,16 @@ export default {
     console.log('[请求] Headers:', JSON.stringify(Object.fromEntries(request.headers.entries())));
     
     if (request.method !== 'POST' || !contentType.startsWith('application/grpc')) {
-      return new Response('草你妈给你脸了是吧，看看这里看看那里，你他妈没有是吧', { status: 500 });
+      return new Response(null, { status: 403 });
+    }
+    if (!ACL检查(request, env)) {
+      return new Response(null, { status: 403 });
     }
     if (!路径鉴权(request, env)) {
-      return new Response('114514', { status: 403 });
+      return new Response(null, { status: 403 });
     }
     if (!验证Token(request, env)) {
-      return new Response('1919810', { status: 403 });
+      return new Response(null, { status: 403 });
     }
 
     const { readable, writable } = new TransformStream();
