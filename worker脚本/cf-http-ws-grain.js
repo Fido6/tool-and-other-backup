@@ -1,2 +1,181 @@
-const SETTINGS={DEFAULT_REP:"ProxyIP.CMLiussss.net",TCP_DNS:"9.9.9.9",DOH_SERVER:"https://dns.quad9.net/dns-query"};class Trace{constructor(e="info"){this.level=e,this.id=Math.floor(9e4*Math.random())+1e4}log(e,...t){"none"!==this.level&&console.log(`${(new Date).toISOString()} [${e}] (${this.id}):`,...t)}info(...e){["debug","info"].includes(this.level)&&this.log("INFO",...e)}error(...e){["debug","info","error"].includes(this.level)&&this.log("ERR ",...e)}}function buildAQuery(e){const t=new Uint8Array(12);t.set([0,1,1,0,0,1,0,0,0,0,0,0]);const n=[];e.split(".").forEach((e=>{n.push(e.length);for(let t=0;t<e.length;t++)n.push(e.charCodeAt(t))})),n.push(0,0,1,0,1);const r=new Uint8Array(t.length+n.length);return r.set(t),r.set(n,t.length),r}function parseIP(e){try{const t=new DataView(e.buffer);let n=12;for(;0!==t.getUint8(n);)n+=t.getUint8(n)+1;n+=5;for(let r=0;r<10&&!(n+12>e.length);r++){const e=t.getUint16(n+2),r=t.getUint16(n+10);if(1===e&&4===r){const e=[];for(let r=0;r<4;r++)e.push(t.getUint8(n+12+r));return e.join(".")}n+=12+r}}catch(e){}return null}async function resolveDNS(e,t,n){if(/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(e)||e.includes(":"))return e;const r=buildAQuery(e);try{t.info(`DNS_DOH | Querying ${e}...`);const n=await fetch(SETTINGS.DOH_SERVER,{method:"POST",headers:{"content-type":"application/dns-message"},body:r});if(n.ok){const r=parseIP(new Uint8Array(await n.arrayBuffer()));if(r)return t.info(`DNS_DOH_OK | ${e} -> ${r}`),r}}catch(e){t.error(`DNS_DOH_FAIL | ${e.message}`)}try{t.info(`DNS_TCP | Falling back to TCP DNS (${SETTINGS.TCP_DNS})...`);const s=await n.connect({hostname:SETTINGS.TCP_DNS,port:53}),o=s.writable.getWriter(),a=s.readable.getReader(),i=new Uint8Array(r.length+2);new DataView(i.buffer).setUint16(0,r.length),i.set(r,2),await o.write(i);const{value:c,done:l}=await a.read();if(o.close(),a.releaseLock(),!l&&c.length>14){const n=parseIP(c.slice(2));if(n)return t.info(`DNS_TCP_OK | ${e} -> ${n}`),n}}catch(e){t.error(`DNS_TCP_FAIL | ${e.message}`)}return t.error(`DNS_ALL_FAIL | Using default resolution for ${e}`),e}const toUint8Array=e=>e instanceof Uint8Array?e:e instanceof ArrayBuffer?new Uint8Array(e):"string"==typeof e?(new TextEncoder).encode(e):new Uint8Array(e),isIP=e=>/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(e)||e.includes(":");
-export default{async fetch(e,t,n){const r=t.AUTH_PATH||"/proxy",s=e.headers.get("CF-Connecting-IP")||"unknown",o=new Trace(t.LOG_LEVEL||"info"),a=e.fetcher;if("websocket"!==e.headers.get("Upgrade")?.toLowerCase()){const t=new URL(e.url);return t.hostname="199.232.112.204",fetch(new Request(t,e))}const i=new URL(e.url);if(i.pathname.includes("%3F")){const e=decodeURIComponent(i.pathname),t=e.indexOf("?");-1!==t&&(i.search=e.substring(t),i.pathname=e.substring(0,t))}if(i.pathname!==r)return o.info(`AUTH_FAIL | IP: ${s}, WSToken: ${i.pathname}`),new Response("Payment Required",{status:402,headers:{"Content-Type":"text/plain"}});o.info(`AUTH_OK | IP: ${s}, WSToken: ${i.pathname}`);const[c,l]=Object.values(new WebSocketPair);l.accept();let f=null,h=[],u=!1,d=!1,g=!1,w=Date.now();const p=e.headers.get("sec-websocket-protocol");if(p)try{h.push(Uint8Array.from(atob(p.replace(/-/g,"+").replace(/_/g,"/")),(e=>e.charCodeAt(0))).buffer)}catch{}const $=()=>{if(!g){g=!0;try{f?.close()}catch{}}},y=(e=1e3,t="normal")=>{if(!d&&1===l.readyState){d=!0;try{l.close(e,t)}catch{}}};return l.addEventListener("close",(()=>{d=!0;const e=Date.now()-w;o.info(`WS_CLOSE | IP: ${s} | Duration: ${e}ms | remoteClosed: ${g}`),$()})),l.addEventListener("error",(()=>{d=!0,$()})),l.addEventListener("message",(async e=>{if(g)return;const r=toUint8Array(e.data);if(f)try{const e=f.writable.getWriter();await e.write(r),e.releaseLock()}catch{$()}else h.push(r),await async function(){if(u)return;u=!0;let e=0;const r=[];for(const t of h)r.push(t),e+=t.byteLength;const i=new Uint8Array(e);let c=0;for(const e of r)i.set(e,c),c+=e.byteLength;const g=(new TextDecoder).decode(i),w=g.indexOf("\r\n");if(-1===w)return void(u=!1);const p=g.substring(0,w).match(/^([A-Z]+)\s+([^\s]+)\s+HTTP\/1\.[01]/i);if(!p)return void(u=!1);const $=p[1].toUpperCase(),T=p[2],S="CONNECT"===$;let A="",E=80;if(S){let e=T;if(e.startsWith("[")){const t=e.lastIndexOf("]");A=e.substring(1,t);const n=e.substring(t+1);E=n.startsWith(":")?parseInt(n.slice(1),10):443}else{const t=e.split(":");A=t[0],E=t[1]?parseInt(t[1],10):443}}else if(T.startsWith("http://")||T.startsWith("https://"))try{const e=new URL(T);A=e.hostname,E=e.port?parseInt(e.port,10):"https:"===e.protocol?443:80}catch{}else{const e=g.match(/\r\nHost:\s*([^\r\n]+)/i);if(e){const t=e[1].trim().split(":");A=t[0],E=t[1]?parseInt(t[1],10):80}}if(!A)return void(u=!1);o.info(`REQ | IP: ${s}, Target: ${A}:${E}, Method: ${$}`);const I=t.PROXY&&t.PROXY.length>0?t.PROXY:SETTINGS.DEFAULT_REP,_=isIP(A)?A:await resolveDNS(A,o,a),P=async e=>await a.connect({hostname:e,port:E});let L,b=!1;try{L=await P(_)}catch(e){const t=(e.message||"").toLowerCase();if(!t.includes("fetch")&&!t.includes("orange")||!I)return o.error(`CONN_FAIL | ${A}:${E} | ${String(e)}`),void(u=!1);o.info(`GW_FALLBACK | ${A}:${E} via Gateway: ${I}`);try{L=await P(I),b=!0}catch(e){return o.error(`CONN_FAIL | ${A}:${E} | ${String(e)}`),void(u=!1)}}if(o.info(`CONN_OK | ${A}:${E} | ${b?"VIA_GW":"DIRECT"}`),f=L,S){1===l.readyState&&l.send("HTTP/1.1 200 Connection Established\r\n\r\n");const e=g.indexOf("\r\n\r\n"),t=-1===e?new Uint8Array(0):i.slice(e+4);if(t.length>0){const e=L.writable.getWriter();await e.write(t),e.releaseLock()}}else{const e=L.writable.getWriter();await e.write(i),e.releaseLock()}const m=L.readable.pipeTo(new WritableStream({write(e){1!==l.readyState||d||l.send(e)},close(){o.info(`REMOTE_CLOSE | ${A}:${E}`),y(1e3,"normal")},abort(){o.info(`REMOTE_ABORT | ${A}:${E}`),y(1e3,"normal")}})).catch((e=>{o.error(`PIPE_ERR | ${A}:${E} | ${e.message}`),y()}));n.waitUntil(m.then((()=>o.info(`PIPE_END | ${A}:${E}`)),(e=>o.error(`PIPE_FAIL | ${A}:${E} | ${e.message}`))))}()})),new Response(null,{status:101,webSocket:c})}};
+/**
+ * Cloudflare Worker Socket Proxy (Standalone Production Edition)
+ * 
+ * 机制解答：
+ * 为什么 GrainTCP / cf_grpc-graintcp 也是用 fetcher.connect 出站却不报错？
+ * 1. 【目标域名直连】：客户端真正访问的目标（如 google.com:443、github.com:443、或非-CF VPS）
+ *    出站时，fetcher.connect({ hostname: "google.com", port: 443 }) 是 100% 允许且正常工作的。
+ * 2. 【自动降级中转】：当目标是 Cloudflare 节点的 IP/域名 时，fetcher.connect 直连会被 Cloudflare 阻止。
+ *    此时 connectWithFallback 函数捕捉到错误，自动降级切换到 PROXYIP (反代中转节点)。
+ */
+
+// 配置项：如果设置了 PROXY_IP，直连失败或遇到 CF 节点时会自动降级中转
+const CONFIG = {
+  AUTH_PATH: '/proxy',
+  // 可以填入有效的第三方中转代理 IP (注意：不能填 Cloudflare CDN 优选 IP)
+  PROXY_IP: 'ProxyIP.CMLiussss.net',
+  PROXY_PORT: 443,
+  CONCURRENCY: 1, // 竞速连接并发数
+};
+
+// 识别 Cloudflare 官方 IP 和域名范围
+function isCloudflareIP(hostname) {
+  if (!hostname) return false;
+  const h = hostname.toLowerCase().trim();
+  const cfIpRanges = [
+    /^104\.(1[6-9]|2[0-9]|3[0-1])\./,
+    /^172\.(6[4-9]|7[0-1])\./,
+    /^162\.15[8-9]\./,
+    /^108\.162\.(19[2-9]|2[0-5][0-9])\./,
+    /^198\.41\.(12[8-9]|1[3-9][0-9]|2[0-5][0-9])\./,
+    /^188\.114\.(9[6-9]|1[0-1][0-9])\./,
+    /^103\.21\.(24[4-7])\./,
+  ];
+  if (cfIpRanges.some((r) => r.test(h))) return true;
+  if (h === '1.1.1.1' || h === '1.0.0.1') return true;
+  if (h.endsWith('.workers.dev') || h.endsWith('.pages.dev') || h.endsWith('.cloudflare.com')) return true;
+  return false;
+}
+
+// 单次 Socket 连接建立
+const sprout = async (fetcher, host, port) => {
+  if (isCloudflareIP(host)) {
+    throw new Error(`Target ${host} is inside Cloudflare CDN network. Direct connect prohibited.`);
+  }
+  const socket = fetcher.connect({ hostname: host, port });
+  await socket.opened;
+  return socket;
+};
+
+// 多并发竞速连接（借鉴 GrainTCP raceSprout）
+const raceSprout = (fetcher, host, port, concur = CONFIG.CONCURRENCY) => {
+  if (!fetcher?.connect) return Promise.reject(new Error('fetcher.connect unavailable'));
+  if (concur <= 1) return sprout(fetcher, host, port);
+  const tasks = Array(concur).fill().map(() => sprout(fetcher, host, port));
+  return Promise.any(tasks).then((winner) => {
+    tasks.forEach((t) => t.then((s) => s !== winner && s.close(), () => {}));
+    return winner;
+  });
+};
+
+// 关键函数：带中转降级的 Socket 连接器（与 cf_grpc-graintcp.js 机制一致）
+const connectWithFallback = async (fetcher, host, port, proxyIP) => {
+  try {
+    // 1. 优先尝试直连真正的目标（例如 google.com / github.com / 外部 VPS）
+    return await raceSprout(fetcher, host, port);
+  } catch (err) {
+    // 2. 如果直连失败（例如目标是 Cloudflare 节点），回退到中转代理
+    if (!proxyIP || isCloudflareIP(proxyIP)) {
+      throw new Error(`Direct connect to ${host}:${port} failed (${err.message}), and no valid external proxyIP is configured.`);
+    }
+    console.log(`[Fallback] Direct connect to ${host}:${port} failed. Routing through ProxyIP: ${proxyIP}`);
+    return raceSprout(fetcher, proxyIP, CONFIG.PROXY_PORT);
+  }
+};
+
+export default {
+  async fetch(req, env, ctx) {
+    const authPath = env.AUTH_PATH || CONFIG.AUTH_PATH;
+    const proxyIP = env.PROXY_IP || CONFIG.PROXY_IP;
+
+    // WebSocket 握手检查
+    if (req.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
+      return new Response('Worker TCP Proxy Active', { status: 200 });
+    }
+
+    const url = new URL(req.url);
+    if (url.pathname !== authPath) {
+      return new Response('Unauthorized Path', { status: 403 });
+    }
+
+    const [client, ws] = Object.values(new WebSocketPair());
+    ws.accept();
+
+    let remoteSocket = null;
+    let isConnected = false;
+
+    ws.addEventListener('message', async (event) => {
+      if (isConnected && remoteSocket) {
+        // 已建立 Socket 管道，持续转发数据
+        try {
+          const writer = remoteSocket.writable.getWriter();
+          const data = event.data instanceof ArrayBuffer ? new Uint8Array(event.data) : new TextEncoder().encode(event.data);
+          await writer.write(data);
+          writer.releaseLock();
+        } catch (e) {
+          console.error('[Remote Write Error]', e);
+          ws.close(1011, 'Remote write error');
+        }
+        return;
+      }
+
+      // 尚未建立 Socket：解析首帧 Target 地址
+      try {
+        const data = event.data instanceof ArrayBuffer ? new Uint8Array(event.data) : new TextEncoder().encode(event.data);
+        const text = new TextDecoder().decode(data);
+        
+        // 简单 HTTP / CONNECT 报文解析提取目标 host & port
+        let host = '';
+        let port = 80;
+        const firstLine = text.split('\r\n')[0] || '';
+        const match = firstLine.match(/^([A-Z]+)\s+([^\s]+)\s+HTTP/i);
+
+        if (match) {
+          const method = match[1].toUpperCase();
+          const target = match[2];
+          if (method === 'CONNECT') {
+            const parts = target.split(':');
+            host = parts[0];
+            port = parseInt(parts[1] || '443', 10);
+          } else {
+            const hostMatch = text.match(/\r\nHost:\s*([^\r\n]+)/i);
+            if (hostMatch) {
+              const parts = hostMatch[1].trim().split(':');
+              host = parts[0];
+              port = parseInt(parts[1] || '80', 10);
+            }
+          }
+        }
+
+        if (!host) {
+          // 若不是标准 HTTP，降级兜底目标
+          host = '1.1.1.1';
+          port = 443;
+        }
+
+        // 调用带降级中转的连接函数
+        remoteSocket = await connectWithFallback(req.fetcher, host, port, proxyIP);
+        isConnected = true;
+
+        if (firstLine.startsWith('CONNECT')) {
+          ws.send('HTTP/1.1 200 Connection Established\r\n\r\n');
+        }
+
+        // 将远程 Socket 读取的数据 Pipe 给 WebSocket 客户端
+        remoteSocket.readable.pipeTo(
+          new WritableStream({
+            write(chunk) {
+              if (ws.readyState === 1) ws.send(chunk);
+            },
+            close() {
+              ws.close(1000, 'Remote closed');
+            },
+            abort() {
+              ws.close(1011, 'Remote aborted');
+            }
+          })
+        ).catch(() => {});
+
+      } catch (err) {
+        console.error('[Connection Error]', err.message);
+        ws.close(1011, err.message);
+      }
+    });
+
+    ws.addEventListener('close', () => {
+      try { remoteSocket?.close(); } catch {}
+    });
+
+    return new Response(null, { status: 101, webSocket: client });
+  }
+};
