@@ -7,6 +7,7 @@ const CFG = {
   ServiceName: 'xiG5zuUuDn5Ss6g6jj3d5o8OKlR7b5AY', //这里必须填写东西，用作鉴权，推荐使用密码生成器，尽量不要使用特殊字符，否则就等着1101吧
   GRPCMODE: 'gun', //gun or multi
   PXIP: 'sg.wogg.us.kg', //反代IP
+  DEBUG: false, // 大流量传输时请保持关闭，避免日志和十六进制转换耗尽 Worker CPU 时间
   //上面3行按需更改，下面的不用改，前5行建议部署时删掉
   TARGET: '', // 不填写任何东西
   AUTH_TOKEN: '', //这里不要填任何东西
@@ -42,6 +43,26 @@ const CFG = {
 const dec = new TextDecoder();
 const enc = new TextEncoder();
 const 取首个值 = v => Array.isArray(v) ? v[0] : v;
+const DEBUG = !!CFG.DEBUG;
+
+const dlog = (...args) => {
+  if (DEBUG) console.log(...args);
+};
+
+const dwarn = (...args) => {
+  if (DEBUG) console.warn(...args);
+};
+
+const debugHex = (label, bytes, maxLen = 64) => {
+  if (!DEBUG || !bytes) return;
+  console.log(label, toHex(bytes, maxLen));
+};
+
+const debugText = (label, bytes, maxLen = 200) => {
+  if (!DEBUG || !bytes?.byteLength) return;
+  const preview = dec.decode(bytes.subarray(0, Math.min(maxLen, bytes.byteLength)));
+  console.log(label, preview.replace(/[^\x20-\x7E]/g, '.'));
+};
 
 // ── 辅助：将 Uint8Array 转为十六进制字符串 ──
 function toHex(bytes, maxLen = 64) {
@@ -92,7 +113,7 @@ function ACL检查(request, env) {
   const reqCity = (cf.city || '');
   const reqAsn = cf.asn ?? -1; // asn 是数字
 
-  console.log('[ACL] 请求地理信息 → country:', reqCountry, 'region:', reqRegion, 'city:', reqCity, 'asn:', reqAsn);
+  dlog('[ACL] 请求地理信息 → country:', reqCountry, 'region:', reqRegion, 'city:', reqCity, 'asn:', reqAsn);
 
   const hit = rules.some(rule => {
     if (rule.country && rule.country.toUpperCase() === reqCountry) return true;
@@ -105,20 +126,20 @@ function ACL检查(request, env) {
   if (cfgMode === 'whitelist') {
     // 白名单：匹配到的才放行
     if (!hit) {
-      console.warn('[ACL] 白名单拦截 → country:', reqCountry, 'region:', reqRegion, 'city:', reqCity, 'asn:', reqAsn);
+      dwarn('[ACL] 白名单拦截 → country:', reqCountry, 'region:', reqRegion, 'city:', reqCity, 'asn:', reqAsn);
       return false;
     }
-    console.log('[ACL] 白名单放行');
+    dlog('[ACL] 白名单放行');
     return true;
   }
 
   if (cfgMode === 'blacklist') {
     // 黑名单：匹配到的被拒绝
     if (hit) {
-      console.warn('[ACL] 黑名单拦截 → country:', reqCountry, 'region:', reqRegion, 'city:', reqCity, 'asn:', reqAsn);
+      dwarn('[ACL] 黑名单拦截 → country:', reqCountry, 'region:', reqRegion, 'city:', reqCity, 'asn:', reqAsn);
       return false;
     }
-    console.log('[ACL] 黑名单放行');
+    dlog('[ACL] 黑名单放行');
     return true;
   }
 
@@ -275,7 +296,7 @@ const pipeToClientByob = async (readable, writer) => {
       const { done, value: v } = await r.read(new Uint8Array(buf, 0, CFG.chunk));
       if (done) break;
       if (!v?.byteLength) continue;
-      console.log('[下行] 从目标收到', v.byteLength, '字节');
+      dlog('[下行] 从目标收到', v.byteLength, '字节');
       if (v.byteLength >= (CFG.chunk >> 1)) {
         await tx.reap();
         await writer.write(makeProtobufGrpcFrame(v));
@@ -286,7 +307,7 @@ const pipeToClientByob = async (readable, writer) => {
       }
     }
     await tx.reap();
-    console.log('[下行] 目标连接关闭');
+    dlog('[下行] 目标连接关闭');
   } catch (e) {
     console.error('[下行异常]', e?.message || e);
   } finally {
@@ -300,12 +321,12 @@ const pipeToClientByob = async (readable, writer) => {
 // ═══════════════════════════════════════════════════════════════════
 
 const sprout = async (f, h, p) => {
-  console.log('[拨号] f.connect({ hostname:', h, ', port:', p, '})');
+  dlog('[拨号] f.connect({ hostname:', h, ', port:', p, '})');
   try {
     const s = f.connect({ hostname: h, port: p });
-    console.log('[拨号] 等待 socket.opened...');
+    dlog('[拨号] 等待 socket.opened...');
     const opened = await s.opened;
-    console.log('[拨号] socket 已打开');
+    dlog('[拨号] socket 已打开');
     return s;
   } catch (e) {
     console.error('[拨号] f.connect 失败:', e?.message || e);
@@ -315,13 +336,13 @@ const sprout = async (f, h, p) => {
 
 // ── 备选方案：使用 cloudflare:sockets API ──
 const sproutSockets = async (h, p) => {
-  console.log('[拨号-sockets] 尝试 cloudflare:sockets connect:', h, p);
+  dlog('[拨号-sockets] 尝试 cloudflare:sockets connect:', h, p);
   try {
     const { connect } = await import('cloudflare:sockets');
     const socket = connect({ hostname: h, port: p, secureTransport: 'off' });
-    console.log('[拨号-sockets] 等待 socket.opened...');
+    dlog('[拨号-sockets] 等待 socket.opened...');
     await socket.opened;
-    console.log('[拨号-sockets] socket 已打开');
+    dlog('[拨号-sockets] socket 已打开');
     return socket;
   } catch (e) {
     console.error('[拨号-sockets] 失败:', e?.message || e);
@@ -342,37 +363,37 @@ const raceSprout = (f, h, p) => {
 const connectWithFallback = async (fetcher, host, port, proxyIP) => {
   // 方案 1：尝试直接连接（通过 fetcher.connect）
   try {
-    console.log('[连接] 尝试直连:', host, port);
+    dlog('[连接] 尝试直连:', host, port);
     return await raceSprout(fetcher, host, port);
   } catch (e1) {
-    console.log('[连接] 直连失败:', e1?.message);
+    dlog('[连接] 直连失败:', e1?.message);
   }
   
   // 方案 2：尝试 cloudflare:sockets 直连
   try {
-    console.log('[连接] 尝试 sockets 直连:', host, port);
+    dlog('[连接] 尝试 sockets 直连:', host, port);
     return await sproutSockets(host, port);
   } catch (e2) {
-    console.log('[连接] sockets 直连失败:', e2?.message);
+    dlog('[连接] sockets 直连失败:', e2?.message);
   }
   
   // 方案 3：通过 proxy IP 中转（解决 CDN 网站无法直连的问题）
   if (proxyIP) {
     const [addr, p] = await 解析地址端口(proxyIP);
-    console.log('[连接] 通过 proxy IP 连接:', addr, p, '-> 目标:', host + ':' + port);
+    dlog('[连接] 通过 proxy IP 连接:', addr, p, '-> 目标:', host + ':' + port);
     
     // 尝试 fetcher.connect 到 proxy IP
     try {
       return await raceSprout(fetcher, addr, p);
     } catch (e3) {
-      console.log('[连接] proxy fetcher.connect 失败:', e3?.message);
+      dlog('[连接] proxy fetcher.connect 失败:', e3?.message);
     }
     
     // 尝试 cloudflare:sockets 到 proxy IP
     try {
       return await sproutSockets(addr, p);
     } catch (e4) {
-      console.log('[连接] proxy sockets 失败:', e4?.message);
+      dlog('[连接] proxy sockets 失败:', e4?.message);
     }
   }
   
@@ -389,7 +410,7 @@ function parseHttpRequest(data) {
   const connectMatch = text.match(/^CONNECT\s+([^\s:]+):(\d+)\s+HTTP\/[\d.]+\r?\n/i);
   if (connectMatch) {
     const headerEnd = text.indexOf('\r\n\r\n');
-    console.log('[HTTP] 解析到 CONNECT:', connectMatch[1] + ':' + connectMatch[2]);
+    dlog('[HTTP] 解析到 CONNECT:', connectMatch[1] + ':' + connectMatch[2]);
     return {
       type: 'CONNECT',
       host: connectMatch[1],
@@ -401,7 +422,7 @@ function parseHttpRequest(data) {
   const httpMatch = text.match(/^(GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\s+https?:\/\/([^/\s:]+)(?::(\d+))?(\/[^\s]*)\s+HTTP\/[\d.]+\r?\n/i);
   if (httpMatch) {
     const headerEnd = text.indexOf('\r\n\r\n');
-    console.log('[HTTP] 解析到', httpMatch[1], httpMatch[2]);
+    dlog('[HTTP] 解析到', httpMatch[1], httpMatch[2]);
     return {
       type: 'HTTP',
       method: httpMatch[1],
@@ -428,34 +449,50 @@ async function processStream(request, clientReader, responseWriter, env) {
 
   const cfgTarget = (取首个值(env?.TARGET) ?? CFG.TARGET) || '';
   const cfgProxyIP = (取首个值(env?.PROXY_IP) ?? CFG.PXIP) || '';
-  console.log('[配置] TARGET:', cfgTarget || '(动态解析)', 'PROXY_IP:', cfgProxyIP || '(无)');
+  dlog('[配置] TARGET:', cfgTarget || '(动态解析)', 'PROXY_IP:', cfgProxyIP || '(无)');
 
   const closeAll = async () => {
     if (closed) return; closed = true;
     ring.drain();
-    try { writer?.releaseLock(); } catch {}
+    const currentWriter = writer;
+    writer = null;
+    try { currentWriter?.releaseLock(); } catch {}
     try { socket?.close(); } catch {}
     try { await responseWriter.close(); } catch {}
   };
 
+  const writeToTarget = async data => {
+    if (closed || !data?.byteLength) return false;
+    const currentWriter = writer;
+    if (!currentWriter) return false;
+    try {
+      await currentWriter.write(data);
+      return true;
+    } catch (e) {
+      console.error('[上行异常] 写入目标失败:', e?.message || e);
+      await closeAll();
+      return false;
+    }
+  };
+
   const connectAndForward = async (host, port, initialData) => {
-    console.log('[转发] 连接目标:', host + ':' + port, '初始数据:', initialData?.byteLength || 0, '字节');
+    dlog('[转发] 连接目标:', host + ':' + port, '初始数据:', initialData?.byteLength || 0, '字节');
     socket = await connectWithFallback(fetcher, host, port, cfgProxyIP);
-    console.log('[转发] 目标连接成功');
+    dlog('[转发] 目标连接成功');
     writer = socket.writable.getWriter();
     
     // 发送 HTTP 200 响应（xray-core HTTP 协议需要此响应）
     const http200 = enc.encode('HTTP/1.1 200 Connection Established\r\n\r\n');
     await responseWriter.write(makeProtobufGrpcFrame(http200));
-    console.log('[转发] 已发送 HTTP 200 响应');
+    dlog('[转发] 已发送 HTTP 200 响应');
     
     // 启动下泵：目标 → gRPC → 客户端
     pump = pipeToClientByob(socket.readable, responseWriter).catch(() => {});
     
     // 发送残留初始数据（CONNECT 之后的数据）
     if (initialData?.byteLength) {
-      console.log('[转发] 发送初始数据:', initialData.byteLength, '字节');
-      await writer.write(initialData);
+      dlog('[转发] 发送初始数据:', initialData.byteLength, '字节');
+      if (!await writeToTarget(initialData)) return;
     }
   };
 
@@ -464,59 +501,58 @@ async function processStream(request, clientReader, responseWriter, env) {
       const { done, value } = await clientReader.read();
       if (done || closed) break;
       
-      console.log('[上行] 收到原始数据:', value.byteLength, '字节');
-      console.log('[上行] 原始 hex (前 128 字节):', toHex(value, 128));
+      dlog('[上行] 收到原始数据:', value.byteLength, '字节');
+      debugHex('[上行] 原始 hex (前 128 字节):', value, 128);
       
       ring.append(value);
 
       let frameCount = 0;
       for (;;) {
         if (ring.length < 5) {
-          console.log('[解析] 数据不足 5 字节，等待更多数据，当前:', ring.length);
+          dlog('[解析] 数据不足 5 字节，等待更多数据，当前:', ring.length);
           break;
         }
         const hdr = ring.peek(5);
-        console.log('[解析] gRPC 帧头:', toHex(hdr));
+        debugHex('[解析] gRPC 帧头:', hdr);
         
         // 检查 gRPC 帧头是否有效
         const compressionFlag = hdr[0];
         const grpcLen = ((hdr[1] << 24) >>> 0) | (hdr[2] << 16) | (hdr[3] << 8) | hdr[4];
         
-        console.log('[解析] compression:', compressionFlag, 'grpcLen:', grpcLen, 'ring剩余:', ring.length);
+        dlog('[解析] compression:', compressionFlag, 'grpcLen:', grpcLen, 'ring剩余:', ring.length);
         
         if (grpcLen > 1024 * 1024) { // 超过 1MB 明显异常
           console.error('[解析] gRPC 帧长度异常:', grpcLen, '，可能是数据格式不匹配');
           console.error('[解析] 帧头字节:', Array.from(hdr).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '));
           // 尝试以不同偏移量解析
-          console.log('[解析] 尝试偏移 1 字节:', toHex(ring.peek(Math.min(6, ring.length)), 6));
-          console.log('[解析] 尝试偏移 2 字节:', toHex(ring.peek(Math.min(7, ring.length)).subarray(1), 6));
+          debugHex('[解析] 尝试偏移 1 字节:', ring.peek(Math.min(6, ring.length)), 6);
+          debugHex('[解析] 尝试偏移 2 字节:', ring.peek(Math.min(7, ring.length)).subarray(1), 6);
           
           // 打印更多原始数据帮助调试
           const moreData = ring.peek(Math.min(64, ring.length));
-          console.log('[解析] 更多原始数据:', toHex(moreData, 64));
-          console.log('[解析] 尝试作为文本:', dec.decode(moreData).replace(/[^\x20-\x7E]/g, '.'));
+          debugHex('[解析] 更多原始数据:', moreData, 64);
+          debugText('[解析] 尝试作为文本:', moreData, 64);
           
           await closeAll();
           return;
         }
         
         if (ring.length < 5 + grpcLen) {
-          console.log('[解析] 帧数据不足，需要', 5 + grpcLen, '当前:', ring.length, '，等待');
+          dlog('[解析] 帧数据不足，需要', 5 + grpcLen, '当前:', ring.length, '，等待');
           break;
         }
         
         const grpcData = ring.peek(5 + grpcLen);
         ring.skip(5 + grpcLen);
         
-        console.log('[解析] 完整帧 hex (前 64 字节):', toHex(grpcData, 64));
+        debugHex('[解析] 完整帧 hex (前 64 字节):', grpcData, 64);
         
         // 剥离 Protobuf Hunk 头（始终剥离，不管 socket 是否已连接）
         const pureData = stripProtobufHeader(grpcData.subarray(5));
         
-        console.log('[解析] 纯数据长度:', pureData.byteLength, '前 32 字节:', toHex(pureData, 32));
-        // 尝试将纯数据作为文本显示
-        const textPreview = dec.decode(pureData.subarray(0, Math.min(200, pureData.byteLength)));
-        console.log('[解析] 纯数据文本预览:', textPreview.replace(/[^\x20-\x7E]/g, '.'));
+        dlog('[解析] 纯数据长度:', pureData.byteLength);
+        debugHex('[解析] 纯数据前 32 字节:', pureData, 32);
+        debugText('[解析] 纯数据文本预览:', pureData, 200);
 
         if (!socket) {
           if (cfgTarget) {
@@ -533,7 +569,7 @@ async function processStream(request, clientReader, responseWriter, env) {
             newBuf.set(pureData, httpBuf.length);
             httpBuf = newBuf;
             
-            console.log('[HTTP] 累积数据:', httpBuf.byteLength, '字节');
+            dlog('[HTTP] 累积数据:', httpBuf.byteLength, '字节');
             
             const parsed = parseHttpRequest(httpBuf);
             if (parsed && parsed.headerEnd >= 0) {
@@ -543,14 +579,14 @@ async function processStream(request, clientReader, responseWriter, env) {
               await connectAndForward(parsed.host, parsed.port, remaining);
             } else if (httpBuf.byteLength > 16384) {
               console.error('[协议错误] 前 16KB 数据中未找到有效的 HTTP 请求头');
-              console.error('[协议错误] 数据预览:', dec.decode(httpBuf.subarray(0, Math.min(500, httpBuf.byteLength))).replace(/[^\x20-\x7E]/g, '.'));
+              debugText('[协议错误] 数据预览:', httpBuf, 500);
               await closeAll(); break;
             } else {
-              console.log('[解析] HTTP 头未完整，已累积', httpBuf.byteLength, '字节，等待更多数据');
+              dlog('[解析] HTTP 头未完整，已累积', httpBuf.byteLength, '字节，等待更多数据');
             }
           }
         } else {
-          await writer.write(pureData);
+          if (!await writeToTarget(pureData)) return;
         }
 
         if (++frameCount % 4 === 0) await Promise.resolve();
@@ -575,20 +611,19 @@ export default {
     const url = new URL(request.url);
     const contentType = request.headers.get('content-type') || '';
     
-    console.log('[请求]', request.method, url.pathname, 'Content-Type:', contentType);
-    console.log('[请求] Headers:', JSON.stringify(Object.fromEntries(request.headers.entries())));
+    dlog('[请求]', request.method, url.pathname, 'Content-Type:', contentType);
     
     if (request.method !== 'POST' || !contentType.startsWith('application/grpc')) {
-      return new Response(null, { status: 403 });
+      return new Response('草你妈给你脸了是吧，看看这里看看那里，你他妈没有是吧', { status: 500 });
     }
     if (!ACL检查(request, env)) {
-      return new Response(null, { status: 403 });
+      return new Response('403 Forbidden', { status: 403 });
     }
     if (!路径鉴权(request, env)) {
-      return new Response(null, { status: 403 });
+      return new Response('114514', { status: 403 });
     }
     if (!验证Token(request, env)) {
-      return new Response(null, { status: 403 });
+      return new Response('1919810', { status: 403 });
     }
 
     const { readable, writable } = new TransformStream();
