@@ -1,7 +1,17 @@
-const CFG = { chunk: 64 * 1024, dnPack: 32 * 1024, dnTail: 512, dnQr: 4, upPack: 20 * 1024, maxED: 8 * 1024, concur: 4, dproxy: 'ProxyIP.CMLiussss.net' };
+const CFG = { chunk: 64 * 1024, dnPack: 32 * 1024, dnTail: 512, dnQr: 4, upPack: 20 * 1024, maxED: 8 * 1024, concur: 4, connTO: 8000, hsTO: 8000, writeTO: 15000, dproxy: 'ProxyIP.CMLiussss.net' };
 export default { fetch: (req, env) => req.headers.get('Upgrade')?.toLowerCase() === 'websocket' ? ws(req, env) : new Response('Hello world!') };
 const dec = new TextDecoder(), enc = new TextEncoder();
-const sprout = (f, h, p, opts, s = f.connect({ hostname: h, port: p }, opts)) => s.opened.then(() => s);
+const closeSock = s => { try { s?.close(); } catch {} };
+const withTimeout = (p, ms, onTimeout, msg = 'timeout') => new Promise((ok, no) => {
+  const t = setTimeout(() => {
+    try { onTimeout?.(); } catch {}
+    no(new Error(msg));
+  }, ms);
+  Promise.resolve(p).then(v => { clearTimeout(t); ok(v); }, e => { clearTimeout(t); no(e); });
+});
+const needWithin = (rb, n, msg) => withTimeout(rb.need(n), CFG.hsTO, null, msg);
+const writeWithin = (w, d, msg) => withTimeout(w.write(d), CFG.writeTO, null, msg);
+const sprout = (f, h, p, opts, s = f.connect({ hostname: h, port: p }, opts)) => withTimeout(s.opened.then(() => s, e => { closeSock(s); throw e; }), CFG.connTO, () => closeSock(s), `connect timeout ${h}:${p}`);
 const raceSprout = (f, h, p, opts) => { if (!f?.connect) return Promise.reject(new Error('connect unavailable')); if (CFG.concur <= 1) return sprout(f, h, p, opts); const ts = Array(CFG.concur).fill().map(() => sprout(f, h, p, opts)); return Promise.any(ts).then(w => { ts.forEach(t => t.then(s => s !== w && s.close(), () => {})); return w; }); };
 const relay = c => {
   const maxScan = Math.min(c.length - 3, 8192);
@@ -68,28 +78,28 @@ const mkRB = reader => { let buf = new Uint8Array(0); const fill = async () => {
 const doSocks5 = async (sock, user, pass, host, port) => {
   const w = sock.writable.getWriter(), hr = sock.readable.getReader(), rb = mkRB(hr), enc = new TextEncoder();
   const methods = user ? [0x00, 0x02] : [0x00];
-  await w.write(new Uint8Array([0x05, methods.length, ...methods]));
-  const greet = await rb.need(2); if (greet[0] !== 0x05) throw new Error('socks5 bad version');
-  if (greet[1] === 0x02) { if (!user) throw new Error('socks5 auth required'); const ub = enc.encode(user), pb = enc.encode(pass); await w.write(new Uint8Array([0x01, ub.byteLength, ...ub, pb.byteLength, ...pb])); const ar = await rb.need(2); if (ar[1] !== 0x00) throw new Error('socks5 auth failed'); }
+  await writeWithin(w, new Uint8Array([0x05, methods.length, ...methods]), 'socks5 greet write timeout');
+  const greet = await needWithin(rb, 2, 'socks5 greet timeout'); if (greet[0] !== 0x05) throw new Error('socks5 bad version');
+  if (greet[1] === 0x02) { if (!user) throw new Error('socks5 auth required'); const ub = enc.encode(user), pb = enc.encode(pass); await writeWithin(w, new Uint8Array([0x01, ub.byteLength, ...ub, pb.byteLength, ...pb]), 'socks5 auth write timeout'); const ar = await needWithin(rb, 2, 'socks5 auth timeout'); if (ar[1] !== 0x00) throw new Error('socks5 auth failed'); }
   else if (greet[1] !== 0x00) throw new Error('socks5 no acceptable method');
   const ipv4 = /^(\d{1,3}\.){3}\d{1,3}$/.test(host), isV6 = !ipv4 && host.includes(':'); let atyp, ab;
   if (ipv4) { atyp = 0x01; ab = new Uint8Array(host.split('.').map(Number)); }
   else if (isV6) { atyp = 0x04; ab = v6b(host.startsWith('[') ? host.slice(1, -1) : host); }
   else { atyp = 0x03; const hb = enc.encode(host); ab = new Uint8Array(1 + hb.byteLength); ab[0] = hb.byteLength; ab.set(hb, 1); }
   const req = new Uint8Array(4 + ab.byteLength + 2); req.set([0x05, 0x01, 0x00, atyp]); req.set(ab, 4); req[req.byteLength - 2] = (port >> 8) & 0xFF; req[req.byteLength - 1] = port & 0xFF;
-  await w.write(req);
-  const head = await rb.need(4); if (head[1] !== 0x00) throw new Error('socks5 connect failed ' + head[1]);
-  const ratyp = head[3]; const alen = ratyp === 0x01 ? 4 : ratyp === 0x04 ? 16 : ratyp === 0x03 ? (await rb.need(1))[0] : 0;
-  await rb.need(alen + 2); const leftover = rb.rest.slice(); w.releaseLock(); hr.releaseLock(); return leftover; };
+  await writeWithin(w, req, 'socks5 connect write timeout');
+  const head = await needWithin(rb, 4, 'socks5 connect timeout'); if (head[1] !== 0x00) throw new Error('socks5 connect failed ' + head[1]);
+  const ratyp = head[3]; const alen = ratyp === 0x01 ? 4 : ratyp === 0x04 ? 16 : ratyp === 0x03 ? (await needWithin(rb, 1, 'socks5 addr timeout'))[0] : 0;
+  await needWithin(rb, alen + 2, 'socks5 reply timeout'); const leftover = rb.rest.slice(); w.releaseLock(); hr.releaseLock(); return leftover; };
 // HTTP(S) CONNECT 隧道；https 模式下 sock 本身已是 TLS（见 chainConnect 的 secureTransport）
 const doHttpConnect = async (sock, user, pass, host, port) => {
   const w = sock.writable.getWriter(), hr = sock.readable.getReader(), rb = mkRB(hr), enc = new TextEncoder(), dec = new TextDecoder();
   const hh = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
   let req = `CONNECT ${hh}:${port} HTTP/1.1\r\nHost: ${hh}:${port}\r\nProxy-Connection: Keep-Alive\r\n`;
   if (user) req += `Proxy-Authorization: Basic ${btoa(`${user}:${pass}`)}\r\n`; req += '\r\n';
-  await w.write(enc.encode(req));
+  await writeWithin(w, enc.encode(req), 'http proxy connect write timeout');
   let head = new Uint8Array(0);
-  for (;;) { const b = await rb.need(1); const n = new Uint8Array(head.byteLength + 1); n.set(head); n.set(b, head.byteLength); head = n; if (head.byteLength >= 4 && head[head.byteLength - 4] === 13 && head[head.byteLength - 3] === 10 && head[head.byteLength - 2] === 13 && head[head.byteLength - 1] === 10) break; if (head.byteLength > 8192) throw new Error('http proxy header too large'); }
+  for (;;) { const b = await needWithin(rb, 1, 'http proxy response timeout'); const n = new Uint8Array(head.byteLength + 1); n.set(head); n.set(b, head.byteLength); head = n; if (head.byteLength >= 4 && head[head.byteLength - 4] === 13 && head[head.byteLength - 3] === 10 && head[head.byteLength - 2] === 13 && head[head.byteLength - 1] === 10) break; if (head.byteLength > 8192) throw new Error('http proxy header too large'); }
   const statusLine = dec.decode(head).split('\r\n')[0]; if (!/\s2\d\d(\s|$)/.test(statusLine)) throw new Error('http proxy: ' + statusLine);
   const leftover = rb.rest.slice(); w.releaseLock(); hr.releaseLock(); return leftover; };
 // 反代协议分发：socks5/http/https 走真实握手；turn/sstp 无法在纯 TCP relay 里做真实协议协商，按裸转发处理（同 PROXYIP 机制，非真协议实现）
@@ -99,11 +109,7 @@ const chainConnect = async (fetcher, chain, host, port) => {
   const sock = await raceSprout(fetcher, chain.host, chain.port); return { sock, leftover: null }; };
 const ws = async (req, env) => {
   const _url = new URL(req.url);
-
-  
   const pathToken = (env?.WS_PATH_TOKEN || 'token').trim().replace(/^\/+/, '');
-
-  
   const pathSegments = _url.pathname.split('/').filter(Boolean);
   if (!pathSegments.length || pathSegments[0] !== pathToken) {
     return new Response('Forbidden', { status: 403 });
@@ -126,8 +132,8 @@ const ws = async (req, env) => {
     if (closed) break; if (!sock) { const [d] = uq.bundle(); if (!d) break; const r = relay(d); if (!r) throw wither(); if (r.isConnect) server.send(enc.encode('HTTP/1.1 200 Connection Established\r\n\r\n')); const host = r.host, port = r.port, payload = d.subarray(r.dataOffset); let leftover = null;
       if (chain) { if (chain.global) { const res = await chainConnect(fetcher, chain, host, port); sock = res.sock; leftover = res.leftover; } else { sock = await raceSprout(fetcher, host, port).catch(async () => { const res = await chainConnect(fetcher, chain, host, port); leftover = res.leftover; return res.sock; }); } }
       else { sock = await raceSprout(fetcher, host, port).catch(async () => { const pxy = pickProxy(); if (!pxy) throw new Error('direct failed'); return raceSprout(fetcher, pxy.h, pxy.p || port); }); }
-      if (!sock) throw wither(); curW = sock.writable.getWriter(); if (leftover && leftover.byteLength) server.send(leftover); const [first] = uq.bundle(payload); first?.byteLength && await curW.write(first); mill(sock.readable, server).finally(() => wither()); continue; }
-    const [d] = uq.bundle(); if (!d) break; await curW.write(d);
+      if (!sock) throw wither(); curW = sock.writable.getWriter(); if (leftover && leftover.byteLength) server.send(leftover); const [first] = uq.bundle(payload); first?.byteLength && await writeWithin(curW, first, 'upstream first write timeout'); mill(sock.readable, server).finally(() => wither()); continue; }
+    const [d] = uq.bundle(); if (!d) break; await writeWithin(curW, d, 'upstream write timeout');
   } } catch { wither(); } finally { busy = false; !uq.empty && !closed && thresh(); } };
   if (ed && sow(ed)) thresh();
   server.addEventListener('message', e => { closed || (sow(e.data) && thresh()); });
